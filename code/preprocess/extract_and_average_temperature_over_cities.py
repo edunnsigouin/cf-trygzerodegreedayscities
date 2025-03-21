@@ -20,8 +20,8 @@ from trygzerodegreedayscities import config, misc
 
 # input --------------------------------------------
 city       = 'Alta'
-year       = 2024
-variable   = 'tn'
+year       = 2025
+variable   = 'tg'
 path_in    = config.dirs['senorge_raw']
 path_out   = config.dirs['fig']
 write2file = True
@@ -151,8 +151,8 @@ def plot_time_series_with_subzero(tn_mean, city, year, write2file):
     plt.tight_layout()
 
     if write2file:
-        filename_out = path_out + f"{city}_DJF_{year}_{variable}.png"
-        plt.savefig(filename_out, format='png')
+        filename_out = path_out + variable + '/' + f"{city}_DJF_{year}_{variable}.pdf"
+        plt.savefig(filename_out, format='pdf')
 
     plt.show()
 
@@ -220,8 +220,8 @@ def plot_bounding_box_map(ds, city, bbox, write2file):
     plt.tight_layout()
 
     if write2file:
-        filename_out = path_out + f"{city}_map.png"
-        plt.savefig(filename_out, format='png')
+        filename_out = path_out + 'maps/' + f"{city}_map.pdf"
+        plt.savefig(filename_out, format='pdf')
 
     plt.show()
 
@@ -279,4 +279,4 @@ if __name__ == "__main__":
 
     plot_time_series_with_subzero(tn_mean, city, year, write2file)
 
-    plot_bounding_box_map(ds_djf, city, bbox, write2file)
+    #plot_bounding_box_map(ds_djf, city, bbox, write2file)
