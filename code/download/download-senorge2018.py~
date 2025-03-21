@@ -1,0 +1,50 @@
+"""
+Script that downloads seNorge2018 data from MetNo.
+The data includes daily accumulated precipitation,
+daily mean, max and min temperature.
+The script splits the data into 4 files, on for 
+each variable.
+Reference paper can be found here:
+https://essd.copernicus.org/articles/11/1531/2019/
+"""
+
+import numpy                  as np
+import xarray                 as xr
+from trygzerodegreedayscities import misc, config
+import os
+
+# INPUT --------------------------
+data_flag    = 'senorge'
+years        = np.arange(2025,2026,1)
+path_in      = config.dirs['senorge_raw']
+path_out     = config.dirs['senorge_raw']
+write2file   = False
+# --------------------------------
+
+for year in years:
+
+    if write2file:
+
+        misc.tic()
+        
+        # download data
+        url      = 'https://thredds.met.no/thredds/fileServer/senorge/seNorge_2018/Archive/'
+        filename = 'seNorge2018_' + str(year) + '.nc'
+        os.system("wget -O " + path_in + filename + " " + url + filename)
+
+        """
+        # split file variables into different files/folders
+        newfilename_tg = path_out + 'tg/' + 'tg_' + str(year) + '.nc'
+        newfilename_tn = path_out + 'tn/' + 'tn_' + str(year) + '.nc'
+        newfilename_tx = path_out + 'tx/' + 'tx_' + str(year) + '.nc'
+        newfilename_rr = path_out + 'rr/' + 'rr_' + str(year) + '.nc'        
+        ds             = xr.open_dataset(path_in + filename)
+        ds['tg'].to_netcdf(newfilename_tg)
+        ds['tn'].to_netcdf(newfilename_tn)
+        ds['tx'].to_netcdf(newfilename_tx)
+        ds['rr'].to_netcdf(newfilename_rr)
+
+        # delete original file
+        os.system("rm " + path_in + filename )
+        """
+        misc.toc()

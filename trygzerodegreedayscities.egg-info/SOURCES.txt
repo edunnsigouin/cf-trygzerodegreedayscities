@@ -1,0 +1,9 @@
+README.md
+setup.py
+trygzerodegreedayscities/config.py
+trygzerodegreedayscities/misc.py
+trygzerodegreedayscities.egg-info/PKG-INFO
+trygzerodegreedayscities.egg-info/SOURCES.txt
+trygzerodegreedayscities.egg-info/dependency_links.txt
+trygzerodegreedayscities.egg-info/requires.txt
+trygzerodegreedayscities.egg-info/top_level.txt

@@ -1,0 +1,7 @@
+Metadata-Version: 2.1
+Name: trygzerodegreedayscities
+Version: 0.0.1
+Author: Etienne Dunn-Sigouin
+Requires-Dist: numpy
+Requires-Dist: xarray
+Requires-Dist: scipy
