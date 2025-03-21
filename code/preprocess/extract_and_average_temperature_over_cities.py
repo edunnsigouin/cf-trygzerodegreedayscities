@@ -151,8 +151,8 @@ def plot_time_series_with_subzero(tn_mean, city, year, write2file):
     plt.tight_layout()
 
     if write2file:
-        filename_out = path_out + f"{city}_DJF_{year}_{variable}.pdf"
-        plt.savefig(filename_out, format='pdf')
+        filename_out = path_out + f"{city}_DJF_{year}_{variable}.png"
+        plt.savefig(filename_out, format='png')
 
     plt.show()
 
@@ -220,8 +220,8 @@ def plot_bounding_box_map(ds, city, bbox, write2file):
     plt.tight_layout()
 
     if write2file:
-        filename_out = path_out + f"{city}_map.pdf"
-        plt.savefig(filename_out, format='pdf')
+        filename_out = path_out + f"{city}_map.png"
+        plt.savefig(filename_out, format='png')
 
     plt.show()
 
