@@ -19,9 +19,9 @@ import matplotlib.dates as mdates
 from trygzerodegreedayscities import config, misc
 
 # input --------------------------------------------
-city       = 'Oslo'
-year       = 2025
-variable   = 'tg'
+city       = 'Alta'
+year       = 2024
+variable   = 'tn'
 path_in    = config.dirs['senorge_raw']
 path_out   = config.dirs['fig']
 write2file = True
