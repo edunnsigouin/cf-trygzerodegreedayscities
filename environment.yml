@@ -10,3 +10,4 @@ dependencies:
     - scipy         # Common math/stats/science functions
     - xarray        # N-d labeled array library
     - os            # allows linux style commands with python
+    - dask          # allows for parrallelization for IO

@@ -21,8 +21,8 @@ import dask
 from trygzerodegreedayscities import config, misc
 
 # input ----------------------------------------------
-month                    = 'jan'
-years                    = np.arange(2023, 2026, 1)
+month                    = 'dec'
+years                    = np.arange(2022, 2025, 1)
 cities                   = config.cities
 path_in                  = config.dirs['senorge_raw']
 path_out                 = config.dirs['data']
