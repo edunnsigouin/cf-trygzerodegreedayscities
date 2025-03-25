@@ -1,0 +1,178 @@
+"""
+calculates a set of monthly statistics for weather variables
+averaged over a set of key norwegian cities. Outputs everything 
+to a csv table for a given month.
+Stats are:
+- percent of days where daily min temperature < 0
+- minimum daily-mean temperature in month
+- maximum daily-mean temperature in month
+- median daily-mean temperature in month
+- mean daily-mean temperature in month
+- percent of days with > 0 daily-accumulated precipitation
+- number of days where daily-accumulated precipitation is extreme, i.e. > 90th percentile based on last 20 years
+"""
+
+import numpy as np
+import xarray as xr
+import pandas as pd
+from trygzerodegreedayscities import config, misc
+
+# input --------------------------------------------
+month      = 'jan'
+years      = np.arange(2023,2026,1)
+cities     = config.cities
+path_in    = config.dirs['senorge_raw']
+path_out   = config.dirs['data']
+write2file = False
+# --------------------------------------------------
+
+
+def month_str_2_num(month_str):
+    month_map = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+        'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
+        'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+    }
+    return month_map[month_str]
+
+
+
+def calc_monthly_precipitation_climatology_per_city(clim_year,month,city,path_in,window=20):
+
+    # create list of filenames for past years
+    years     = np.arange(clim_year - window,clim_year,1)
+    filenames = [f'{path_in}rr/rr_{year}.nc' for year in years]
+
+    ds  = xr.open_mfdataset(filenames)
+    
+    return 
+
+
+
+
+
+
+def calc_monthly_weather_statistics_per_city(city, month, years, path_in):
+    """
+    Calculates a set of monthly weather statistics for a single city.
+    Returns a Pandas DataFrame with columns: city, year, and each statistic.
+    """
+
+    bbox      = misc.get_city_bboxes(city)
+    month_num = month_str_2_num(month)
+
+    # We'll accumulate one dictionary per year, and later convert to a DataFrame
+    records = []
+
+    for year in years:
+        
+        # -- read data
+        filename_tg = f"{path_in}/tg/tg_{year}.nc"
+        filename_tn = f"{path_in}/tn/tn_{year}.nc"
+        filename_rr = f"{path_in}/rr/rr_{year}.nc"
+        tg          = xr.open_dataset(filename_tg)['tg']
+        tn          = xr.open_dataset(filename_tn)['tn']
+        rr          = xr.open_dataset(filename_rr)['rr']
+        
+        # -- subselect month
+        tg = tg.sel(time=tg.time.dt.month == month_num)
+        tn = tn.sel(time=tn.time.dt.month == month_num)
+        rr = rr.sel(time=rr.time.dt.month == month_num)
+        
+        # -- subselect bounding box
+        tg = tg.where(
+            (tg["lat"] >= bbox["lat_min"]) & (tg["lat"] <= bbox["lat_max"]) &
+            (tg["lon"] >= bbox["lon_min"]) & (tg["lon"] <= bbox["lon_max"]),
+            drop=True
+        )
+        tn = tn.where(
+            (tn["lat"] >= bbox["lat_min"]) & (tn["lat"] <= bbox["lat_max"]) &
+            (tn["lon"] >= bbox["lon_min"]) & (tn["lon"] <= bbox["lon_max"]),
+            drop=True
+        )
+        rr = rr.where(
+            (rr["lat"] >= bbox["lat_min"]) & (rr["lat"] <= bbox["lat_max"]) &
+            (rr["lon"] >= bbox["lon_min"]) & (rr["lon"] <= bbox["lon_max"]),
+            drop=True
+        )
+
+        # -- average in space
+        tg = tg.mean(dim=["Y", "X"])
+        tn = tn.mean(dim=["Y", "X"])
+        rr = rr.mean(dim=["Y", "X"])
+        
+        # -- calculate statistics
+        #  percent of days where daily min temperature < 0
+        tn_zero_days = (tn < 0).sum().item()/tn.size*100
+
+        #  minimum daily-mean temperature in month
+        tg_min = tg.min(dim='time').item()
+
+        #  maximum daily-mean temperature in month
+        tg_max = tg.max(dim='time').item()
+
+        #  median daily-mean temperature in month
+        tg_median = tg.median(dim='time').item()
+
+        #  mean daily-mean temperature in month
+        tg_mean = tg.mean(dim='time').item()
+
+        #  percent of days with > 0 precip in a month
+        rr_precip_days = (rr > 0).sum().item()/rr.size*100
+        
+        days_extreme_precip    = -999  # for demonstration
+
+        # -- store result for this year
+        row = {
+            "city": city,
+            "year": year,
+            "tn_zero_days": np.round(tn_zero_days,1),
+            "tg_min": np.round(tg_min,1),
+            "tg_max": np.round(tg_max,1),
+            "tg_median": np.round(tg_median,1),
+            "tg_mean": np.round(tg_mean,1),
+            "rr_precip_days": np.round(rr_precip_days,1),
+            "days_extreme_precip": np.round(days_extreme_precip,1)
+        }
+        records.append(row)
+
+    # -- create a DataFrame for this city
+    df_city = pd.DataFrame(records)
+    
+    return df_city
+
+
+def calc_monthly_weather_statistics_for_cities(cities, month, years, path_in):
+    """
+    Loop over multiple cities, compute stats for each city (and each year),
+    and concatenate everything into one DataFrame.
+    """
+    df_list = []
+    for city in cities:
+        print(city)
+        df_city = calc_monthly_temperature_statistics_per_city(city, month, years, path_in)
+        df_list.append(df_city)
+
+    # Concatenate all cities into a single table
+    df_all = pd.concat(df_list, ignore_index=True)
+    
+    return df_all
+
+
+# -- Main script ------------------------------------------------------------
+if __name__ == "__main__":
+
+    calc_monthly_precipitation_climatology_per_city(2025,month,'bergen',path_in,window=20)
+    
+    """
+    # compute stats for all cities
+    df_stats = calc_monthly_weather_statistics_for_cities(cities, month, years, path_in)
+
+    # optionally write to file
+    if write2file:
+        out_name = f"{path_out}/weather_stats_norwegian_cities_{month}_{years[0]}-{years[-1]}.csv"
+        df_stats.to_csv(out_name, index=False)
+        print(f"CSV written to {out_name}")
+    else:
+        print(df_stats)
+    """
