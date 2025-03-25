@@ -20,4 +20,6 @@ dirs = {"senorge_processed":senorge_processed,
 
 
 cities = ['Oslo','Kristiansand','Stavanger','Bergen','Ålesund','Trondheim','Bodø','Tromsø','Lillehammer','Alta']
+#cities = ['Oslo']
+
 
