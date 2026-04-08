@@ -90,7 +90,7 @@ input_file = (
 )
 
 # Figure options
-savefig = False
+savefig = True
 fig_dpi = 200
 figsize = (14, 6)
 
@@ -383,8 +383,6 @@ if __name__ == "__main__":
 
     path_nc = build_input_path(input_dir=input_dir, input_file=input_file)
     ds = open_processed_dataset(path_nc)
-
-    print(ds['n_valid_days'][:,0,1,0].values)
 
     ds_city = extract_city_season_period(
         ds=ds,
