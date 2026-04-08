@@ -66,9 +66,9 @@ from trygzerodegreedayscities import config
 dataset = "eobs"
 
 # Plot choices
-season = "djf"                       # season to extract and plot: "djf", "mam", "jja", "son"
+season         = "djf"                       # season to extract and plot: "djf", "mam", "jja", "son"
 spatial_method = "gridpoint_mean"    # "gridpoint_mean" or "city_mean"
-city_name = "Oslo"
+city_name      = "Aarhus"
 
 # Years represented by the input file name
 file_years = [1951, 2024]
@@ -81,7 +81,7 @@ file_season_tag = "all"
 
 # Input/output directories
 input_dir = config.dirs["eobs_processed"]
-output_dir = config.dirs["fig"] + dataset + "/"
+output_dir = config.dirs["fig"] + 'oppgave_26-03-26/'
 
 # Input filename pattern from the processing script
 input_file = (
@@ -90,7 +90,7 @@ input_file = (
 )
 
 # Figure options
-savefig = True
+savefig = False
 fig_dpi = 200
 figsize = (14, 6)
 
@@ -121,7 +121,7 @@ def open_processed_dataset(path_nc):
     """Open processed zero-degree crossing statistics file."""
     if not os.path.exists(path_nc):
         raise FileNotFoundError(f"Processed file not found: {path_nc}")
-    return xr.open_dataset(path_nc)
+    return xr.open_dataset(path_nc, decode_timedelta=False)
 
 
 def check_city_exists(ds, city_name):
@@ -367,7 +367,7 @@ def save_figure(fig, output_dir, dataset, city_name, season, spatial_method, plo
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     fig_name = (
-        f"plot_zero_degree_crossing_pct_"
+        f"timeseries_map_zero_degree_crossing_pct_"
         f"{dataset}_{city_name}_{season}_{spatial_method}_{plot_years[0]}-{plot_years[1]}.png"
     )
     fig_path = os.path.join(output_dir, fig_name)
@@ -384,13 +384,15 @@ if __name__ == "__main__":
     path_nc = build_input_path(input_dir=input_dir, input_file=input_file)
     ds = open_processed_dataset(path_nc)
 
+    print(ds['n_valid_days'][:,0,1,0].values)
+
     ds_city = extract_city_season_period(
         ds=ds,
         city_name=city_name,
         season=season,
         plot_years=plot_years,
     )
-
+    
     fig = make_figure(
         ds_city=ds_city,
         city_name=city_name,
@@ -415,3 +417,4 @@ if __name__ == "__main__":
         )
 
     plt.show()
+

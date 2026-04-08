@@ -21,14 +21,20 @@ The script is organized as follows:
    - the script is written so ERA5 can be added later by editing the
      dataset configuration block only
 
-3) For each city and each box size:
-   - subset a lat/lon box around the city center
+3) Before extracting city boxes:
+   - each requested city center is snapped to the nearest valid land grid point
+   - this avoids choosing ocean-only central grid cells with NaNs
+   - the nearest valid point is determined from a reference year
+   - both original and adjusted city coordinates are stored in the output
+
+4) For each city and each box size:
+   - subset a lat/lon box around the adjusted city center
    - compute daily zero-degree crossing flags
    - assign season and "season-year"
    - important: DJF is assigned to the year of January-February
      (e.g. Dec 2003 + Jan/Feb 2004 belongs to DJF 2004)
 
-4) Two different spatial methods are available:
+5) Two different spatial methods are available:
    A) spatial_method = "gridpoint_mean"
       - first calculate zero-degree crossing days at each individual grid cell
       - then aggregate to seasonal counts / percentages at each grid cell
@@ -47,20 +53,21 @@ The script is organized as follows:
    - "gridpoint_mean" preserves spatial variability within the city box
    - "city_mean" gives one representative daily temperature series for the box
 
-5) For each year, city, box size, and season:
+6) For each year, city, box size, and season:
    - compute:
        a) zdc_days : number of zero-degree crossing days
        b) zdc_pct  : percentage of valid days in that season that are
                      zero-degree crossing days
 
-6) Output:
+7) Output:
    - xarray Dataset with dimensions:
          (year, city, box_size_index, season)
    - optional write to NetCDF and/or CSV
 
-7) Metadata written to the NetCDF output:
+8) Metadata written to the NetCDF output:
    - spatial_method is stored as global metadata
-   - city center latitude / longitude are stored as coordinates on the city dimension
+   - original and adjusted city center latitudes / longitudes are stored
+     as coordinates on the city dimension
    - box_size_index is stored as a coordinate dimension
    - the numeric half-width of each box is stored as:
          box_size_delta(box_size_index)
@@ -70,7 +77,7 @@ Notes:
 - The code assumes the raw temperature files contain dimensions
   (time, latitude, longitude).
 - Missing values are handled through xarray decoding.
-- The script currently starts with Oslo, but more cities can be added
+- The script currently starts with Aarhus, but more cities can be added
   to the CITY_COORDS dictionary.
 """
 
@@ -78,19 +85,21 @@ Notes:
 # 1) imports
 # ---------------------------------------------------------------------
 import os
-from pathlib                  import Path
-import numpy                  as np
-import pandas                 as pd
-import xarray                 as xr
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+
 from trygzerodegreedayscities import config
 
 
 # ---------------------------------------------------------------------
 # 2) user defined input parameters
 # ---------------------------------------------------------------------
-dataset = "eobs"                # "eobs" or "era5" (era5 config placeholder included)
-years   = [2022, 2024]            # inclusive range: [start_year, end_year]
-season  = "all"                  # "djf", "mam", "jja", "son", or "all"
+dataset = "eobs"                  # "eobs" or "era5" (era5 config placeholder included)
+years   = [1951, 2024]              # inclusive range: [start_year, end_year]
+season  = "all"                    # "djf", "mam", "jja", "son", or "all"
 
 # Spatial method:
 #   "gridpoint_mean" -> crossing condition at each grid point, then spatial mean
@@ -98,15 +107,17 @@ season  = "all"                  # "djf", "mam", "jja", "son", or "all"
 spatial_method = "gridpoint_mean"
 
 # Output control
-write2csv  = False
-write2nc   = False
+write2csv  = True
+write2nc   = True
 output_dir = config.dirs["eobs_processed"]
 
-# City definitions: start with Oslo
-CITY_COORDS = {
-    "Aarhus":     {"lat": 56.1629, "lon": 10.2039},
-}
-"""
+# Reference-year settings for snapping city centers to valid grid cells.
+# A candidate grid cell is accepted if the fraction of valid tn/tx days in
+# the reference year exceeds this threshold.
+snap_reference_year = None        # None -> use years_list[0]
+snap_valid_fraction_threshold = 0.95
+
+# City definitions
 CITY_COORDS = {
     "Oslo":       {"lat": 59.9139, "lon": 10.7522},
     "Bergen":     {"lat": 60.3913, "lon": 5.3221},
@@ -118,7 +129,6 @@ CITY_COORDS = {
     "Gothenburg": {"lat": 57.7089, "lon": 11.9746},
     "Malmo":      {"lat": 55.6050, "lon": 13.0038},
 }
-"""
 
 
 # Box sizes around each city center.
@@ -204,6 +214,150 @@ def build_file_path(dataset_name, var_type, year):
         return os.path.join(cfg["tx_dir"], cfg["file_template_tx"].format(year=year))
 
     raise ValueError("var_type must be 'tn' or 'tx'.")
+
+
+def find_nearest_valid_gridpoint(
+    ds_tn,
+    ds_tx,
+    lat0,
+    lon0,
+    lat_name="latitude",
+    lon_name="longitude",
+    valid_fraction_threshold=0.95,
+):
+    """
+    Find the nearest valid grid point to (lat0, lon0).
+
+    A grid cell is considered valid if the fraction of days with both
+    finite tn and finite tx exceeds valid_fraction_threshold.
+
+    This is used to avoid selecting ocean-only grid cells as city centers.
+
+    Parameters
+    ----------
+    ds_tn, ds_tx : xarray.DataArray
+        Daily minimum and maximum temperature data for a reference year.
+        Expected dimensions: (time, latitude, longitude).
+    lat0, lon0 : float
+        Requested city center coordinates.
+    lat_name, lon_name : str
+        Coordinate names.
+    valid_fraction_threshold : float
+        Minimum fraction of valid days required for a grid cell to be
+        considered a valid candidate.
+
+    Returns
+    -------
+    lat_valid, lon_valid : float
+        Coordinates of the nearest valid grid point.
+    """
+    valid_time = xr.ufuncs.isfinite(ds_tn) & xr.ufuncs.isfinite(ds_tx)
+    valid_fraction = valid_time.mean(dim="time")
+    valid_grid = valid_fraction > valid_fraction_threshold
+
+    lat_vals = ds_tn[lat_name].values
+    lon_vals = ds_tn[lon_name].values
+    valid_mask = valid_grid.values
+
+    if not np.any(valid_mask):
+        raise ValueError(
+            "No valid grid cells found in reference dataset using "
+            f"valid_fraction_threshold={valid_fraction_threshold}."
+        )
+
+    lon2d, lat2d = np.meshgrid(lon_vals, lat_vals)
+
+    lat_candidates = lat2d[valid_mask]
+    lon_candidates = lon2d[valid_mask]
+
+    dist2 = (lat_candidates - lat0) ** 2 + (lon_candidates - lon0) ** 2
+    idx = np.argmin(dist2)
+
+    return float(lat_candidates[idx]), float(lon_candidates[idx])
+
+
+def adjust_city_centers_to_valid_grid(
+    dataset_name,
+    city_coords,
+    reference_year,
+    valid_fraction_threshold=0.95,
+):
+    """
+    Snap each city center to the nearest valid grid point in the dataset.
+
+    The adjusted coordinates are used as the city centers for all box
+    extractions so that even boxes around coastal cities are centered on
+    a land grid point with valid data.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Dataset identifier, e.g. "eobs".
+    city_coords : dict
+        Original city coordinate dictionary:
+            {"City": {"lat": ..., "lon": ...}, ...}
+    reference_year : int
+        Year used to determine valid grid cells.
+    valid_fraction_threshold : float
+        Minimum fraction of valid days required for a candidate grid cell.
+
+    Returns
+    -------
+    adjusted_city_coords : dict
+        Dictionary with adjusted and original coordinates:
+            {
+                "City": {
+                    "lat": adjusted_lat,
+                    "lon": adjusted_lon,
+                    "orig_lat": original_lat,
+                    "orig_lon": original_lon,
+                },
+                ...
+            }
+    """
+    cfg = DATASET_CONFIG[dataset_name]
+
+    tn_path = build_file_path(dataset_name, "tn", reference_year)
+    tx_path = build_file_path(dataset_name, "tx", reference_year)
+
+    if not os.path.exists(tn_path):
+        raise FileNotFoundError(f"Missing file: {tn_path}")
+    if not os.path.exists(tx_path):
+        raise FileNotFoundError(f"Missing file: {tx_path}")
+
+    adjusted = {}
+
+    with xr.open_dataset(tn_path) as ds_tn, xr.open_dataset(tx_path) as ds_tx:
+        tn = ds_tn[cfg["tn_var"]]
+        tx = ds_tx[cfg["tx_var"]]
+
+        for city_name, coord in city_coords.items():
+            lat0 = coord["lat"]
+            lon0 = coord["lon"]
+
+            lat_adj, lon_adj = find_nearest_valid_gridpoint(
+                ds_tn=tn,
+                ds_tx=tx,
+                lat0=lat0,
+                lon0=lon0,
+                lat_name=cfg["lat_name"],
+                lon_name=cfg["lon_name"],
+                valid_fraction_threshold=valid_fraction_threshold,
+            )
+
+            adjusted[city_name] = {
+                "lat": lat_adj,
+                "lon": lon_adj,
+                "orig_lat": lat0,
+                "orig_lon": lon0,
+            }
+
+            print(
+                f"{city_name:10s}: original=({lat0:.4f}, {lon0:.4f}) "
+                f"-> adjusted=({lat_adj:.4f}, {lon_adj:.4f})"
+            )
+
+    return adjusted
 
 
 def subset_latlon(ds, lat0, lon0, delta, lat_name="latitude", lon_name="longitude"):
@@ -502,7 +656,8 @@ def combine_all_cities_and_boxes(
         for box_name, delta in box_size_deltas.items():
             print(
                 f"Processing {city_name:10s} | box={box_name:6s} | "
-                f"delta={delta:.2f} | method={spatial_method}"
+                f"delta={delta:.2f} | method={spatial_method} | "
+                f"center=({lat0:.4f}, {lon0:.4f})"
             )
 
             ds_box = compute_seasonal_stats_for_box(
@@ -529,11 +684,13 @@ def combine_all_cities_and_boxes(
 
 def add_city_and_box_coordinates(ds_out, city_coords, box_size_deltas):
     """
-    Add city center latitude/longitude and numeric box deltas as coordinates.
+    Add original and adjusted city center coordinates and numeric box deltas.
 
     Added coordinates:
-      - city_lat(city)
-      - city_lon(city)
+      - city_lat(city)          : adjusted latitude used in extraction
+      - city_lon(city)          : adjusted longitude used in extraction
+      - city_orig_lat(city)     : original requested city latitude
+      - city_orig_lon(city)     : original requested city longitude
       - box_size_delta(box_size_index)
     """
     city_names = ds_out["city"].values
@@ -541,24 +698,50 @@ def add_city_and_box_coordinates(ds_out, city_coords, box_size_deltas):
 
     city_lat = [city_coords[city]["lat"] for city in city_names]
     city_lon = [city_coords[city]["lon"] for city in city_names]
+    city_orig_lat = [
+        city_coords[city].get("orig_lat", city_coords[city]["lat"]) for city in city_names
+    ]
+    city_orig_lon = [
+        city_coords[city].get("orig_lon", city_coords[city]["lon"]) for city in city_names
+    ]
     box_delta = [box_size_deltas[box] for box in box_names]
 
     ds_out = ds_out.assign_coords(
         city_lat=("city", city_lat),
         city_lon=("city", city_lon),
+        city_orig_lat=("city", city_orig_lat),
+        city_orig_lon=("city", city_orig_lon),
         box_size_delta=("box_size_index", box_delta),
     )
 
     ds_out["city_lat"].attrs = {
-        "long_name": "City center latitude",
+        "long_name": "Adjusted city center latitude used for extraction",
         "units": "degrees_north",
-        "description": "Central latitude used to define the city box.",
+        "description": (
+            "Latitude of the nearest valid grid point used as the city center "
+            "for extracting the city box."
+        ),
     }
 
     ds_out["city_lon"].attrs = {
-        "long_name": "City center longitude",
+        "long_name": "Adjusted city center longitude used for extraction",
         "units": "degrees_east",
-        "description": "Central longitude used to define the city box.",
+        "description": (
+            "Longitude of the nearest valid grid point used as the city center "
+            "for extracting the city box."
+        ),
+    }
+
+    ds_out["city_orig_lat"].attrs = {
+        "long_name": "Original requested city latitude",
+        "units": "degrees_north",
+        "description": "Original user-specified city-center latitude before snapping.",
+    }
+
+    ds_out["city_orig_lon"].attrs = {
+        "long_name": "Original requested city longitude",
+        "units": "degrees_east",
+        "description": "Original user-specified city-center longitude before snapping.",
     }
 
     ds_out["box_size_delta"].attrs = {
@@ -574,7 +757,15 @@ def add_city_and_box_coordinates(ds_out, city_coords, box_size_deltas):
     return ds_out
 
 
-def add_output_metadata(ds_out, dataset_name, season_name, spatial_method, box_size_deltas):
+def add_output_metadata(
+    ds_out,
+    dataset_name,
+    season_name,
+    spatial_method,
+    box_size_deltas,
+    snap_reference_year,
+    snap_valid_fraction_threshold,
+):
     """
     Add descriptive metadata to the output Dataset so the NetCDF file
     is self-explanatory.
@@ -653,9 +844,18 @@ def add_output_metadata(ds_out, dataset_name, season_name, spatial_method, box_s
         "box_definition": (
             "For each city and box size, the selected spatial domain is "
             "[lat-delta, lat+delta] x [lon-delta, lon+delta], where lat/lon "
-            "are the city center coordinates and delta is the half-width "
+            "are the adjusted city center coordinates and delta is the half-width "
             "stored in box_size_delta."
         ),
+        "city_center_adjustment": (
+            "Original user-specified city centers were snapped to the nearest "
+            "valid grid cell using a reference year to avoid ocean-only central "
+            "grid points with missing data. Original coordinates are stored in "
+            "city_orig_lat and city_orig_lon. Adjusted coordinates used in the "
+            "extraction are stored in city_lat and city_lon."
+        ),
+        "snap_reference_year": int(snap_reference_year),
+        "snap_valid_fraction_threshold": float(snap_valid_fraction_threshold),
         "box_size_delta_mapping": ", ".join(
             [f"{k}={v}" for k, v in box_size_deltas.items()]
         ),
@@ -665,8 +865,16 @@ def add_output_metadata(ds_out, dataset_name, season_name, spatial_method, box_s
     return ds_out
 
 
-def write_outputs(ds_out, output_dir, dataset_name, season_name, spatial_method,
-                  years_list, write2csv=False, write2nc=False):
+def write_outputs(
+    ds_out,
+    output_dir,
+    dataset_name,
+    season_name,
+    spatial_method,
+    years_list,
+    write2csv=False,
+    write2nc=False,
+):
     """
     Write output Dataset to NetCDF and/or CSV.
 
@@ -677,7 +885,7 @@ def write_outputs(ds_out, output_dir, dataset_name, season_name, spatial_method,
       - year range (start-end)
 
     Example:
-      zero_degree_crossing_stats_eobs_all_gridpoint_mean_2004-2024.nc
+      scandinavian_city_zero_degree_crossing_stats_eobs_all_gridpoint_mean_2004-2024.nc
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -710,9 +918,19 @@ if __name__ == "__main__":
     years_list = get_year_list(years)
     seasons = get_season_list(season)
 
-    ds_out = combine_all_cities_and_boxes(
+    if snap_reference_year is None:
+        snap_reference_year = years_list[0]
+
+    adjusted_city_coords = adjust_city_centers_to_valid_grid(
         dataset_name=dataset,
         city_coords=CITY_COORDS,
+        reference_year=snap_reference_year,
+        valid_fraction_threshold=snap_valid_fraction_threshold,
+    )
+
+    ds_out = combine_all_cities_and_boxes(
+        dataset_name=dataset,
+        city_coords=adjusted_city_coords,
         box_size_deltas=BOX_SIZE_DELTAS,
         years_list=years_list,
         seasons=seasons,
@@ -721,7 +939,7 @@ if __name__ == "__main__":
 
     ds_out = add_city_and_box_coordinates(
         ds_out=ds_out,
-        city_coords=CITY_COORDS,
+        city_coords=adjusted_city_coords,
         box_size_deltas=BOX_SIZE_DELTAS,
     )
 
@@ -731,17 +949,17 @@ if __name__ == "__main__":
         season_name=season,
         spatial_method=spatial_method,
         box_size_deltas=BOX_SIZE_DELTAS,
+        snap_reference_year=snap_reference_year,
+        snap_valid_fraction_threshold=snap_valid_fraction_threshold,
     )
-
-    print(ds_out['n_valid_days'][:,0,2,0].values)
-
+    
     write_outputs(
         ds_out=ds_out,
         output_dir=output_dir,
         dataset_name=dataset,
         season_name=season,
         spatial_method=spatial_method,
-        years_list=years_list,  
+        years_list=years_list,
         write2csv=write2csv,
         write2nc=write2nc,
     )
