@@ -89,20 +89,25 @@ from trygzerodegreedayscities import config
 # 2) user defined input parameters
 # ---------------------------------------------------------------------
 dataset = "eobs"                # "eobs" or "era5" (era5 config placeholder included)
-years = [2004, 2024]            # inclusive range: [start_year, end_year]
-season = "all"                  # "djf", "mam", "jja", "son", or "all"
+years   = [1951, 2024]            # inclusive range: [start_year, end_year]
+season  = "all"                  # "djf", "mam", "jja", "son", or "all"
 
 # Spatial method:
 #   "gridpoint_mean" -> crossing condition at each grid point, then spatial mean
 #   "city_mean"      -> spatial mean of tn and tx first, then crossing condition
-spatial_method = "gridpoint_mean"
+spatial_method = "city_mean"
 
 # Output control
-write2csv = True
-write2nc = True
+write2csv  = True
+write2nc   = True
 output_dir = config.dirs["eobs_processed"]
 
 # City definitions: start with Oslo
+CITY_COORDS = {
+    "Oslo":       {"lat": 59.9139, "lon": 10.7522},
+}
+
+"""
 CITY_COORDS = {
     "Oslo":       {"lat": 59.9139, "lon": 10.7522},
     "Bergen":     {"lat": 60.3913, "lon": 5.3221},
@@ -114,15 +119,16 @@ CITY_COORDS = {
     "Gothenburg": {"lat": 57.7089, "lon": 11.9746},
     "Malmo":      {"lat": 55.6050, "lon": 13.0038},
 }
+"""
 
 # Box sizes around each city center.
 # delta means:
 #   lat in [lat0 - delta, lat0 + delta]
 #   lon in [lon0 - delta, lon0 + delta]
 BOX_SIZE_DELTAS = {
-    "small": 0.1,
-    "medium": 0.2,
-    "large": 0.3,
+    "small": 0.0,
+    "medium": 0.1,
+    "large": 0.2,
 }
 
 # Dataset-specific configuration.
@@ -208,8 +214,33 @@ def subset_latlon(ds, lat0, lon0, delta, lat_name="latitude", lon_name="longitud
         lat in [lat0-delta, lat0+delta]
         lon in [lon0-delta, lon0+delta]
 
+    Special case:
+    - if delta == 0, select the single nearest grid point to (lat0, lon0)
+
     Works for coordinates that are either ascending or descending in latitude.
     """
+    # Special case: use nearest single grid point
+    if np.isclose(delta, 0.0):
+        ds_sub = ds.sel(
+            {
+                lat_name: lat0,
+                lon_name: lon0,
+            },
+            method="nearest",
+        )
+
+        # Keep latitude/longitude as dimensions of length 1,
+        # so the rest of the script still works unchanged.
+        ds_sub = ds_sub.expand_dims(
+            {
+                lat_name: [ds_sub[lat_name].item()],
+                lon_name: [ds_sub[lon_name].item()],
+            }
+        )
+
+        return ds_sub
+
+    # Standard box selection for delta > 0
     lat_min, lat_max = lat0 - delta, lat0 + delta
     lon_min, lon_max = lon0 - delta, lon0 + delta
 

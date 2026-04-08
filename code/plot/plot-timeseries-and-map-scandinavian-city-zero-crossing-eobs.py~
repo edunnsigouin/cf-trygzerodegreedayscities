@@ -1,0 +1,417 @@
+"""
+Plot seasonal zero-degree crossing statistics for one Scandinavian city.
+
+This script reads the processed output from the zero-degree crossing statistics
+workflow and creates a two-panel figure for one selected city and season.
+
+Figure layout
+-------------
+Panel 1 (left):
+    - yearly time series of zdc_pct (percentage of zero-degree crossing days)
+    - plotted on the left y-axis only
+    - one line per box size
+    - fixed colors are used for the box sizes:
+          small  -> tab:red
+          medium -> tab:blue
+          large  -> tab:green
+
+Panel 2 (right):
+    - Cartopy map centered on the selected city
+    - shows the city center point
+    - overlays the three latitude-longitude boxes used in the statistics
+    - useful for visually checking the spatial domains
+
+A zero-degree crossing day is defined as:
+    tn < 0 and tx > 0
+
+The script is organized as follows:
+1) Comments at the top explaining the full workflow
+2) Import statements
+3) User-defined input parameters
+4) Functions
+5) Main script that runs the functions
+
+Notes
+-----
+- The input file can contain all seasons and a wider year range than the period
+  you want to plot.
+- The script extracts the requested season and the requested plot period after
+  opening the NetCDF file.
+- The script assumes that the processed NetCDF file contains dimensions:
+      (year, city, box_size_index, season)
+- It also assumes that the file contains coordinates:
+      city_lat(city), city_lon(city), box_size_delta(box_size_index)
+"""
+
+# ---------------------------------------------------------------------
+# 1) import statements
+# ---------------------------------------------------------------------
+import os
+from pathlib import Path
+
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+from trygzerodegreedayscities import config
+
+
+# ---------------------------------------------------------------------
+# 2) user defined input parameters
+# ---------------------------------------------------------------------
+dataset = "eobs"
+
+# Plot choices
+season = "djf"                       # season to extract and plot: "djf", "mam", "jja", "son"
+spatial_method = "gridpoint_mean"    # "gridpoint_mean" or "city_mean"
+city_name = "Oslo"
+
+# Years represented by the input file name
+file_years = [1951, 2024]
+
+# Years to extract from the dataset and plot
+plot_years = [1951, 2024]
+
+# The input file contains all seasons, so keep this fixed in the filename
+file_season_tag = "all"
+
+# Input/output directories
+input_dir = config.dirs["eobs_processed"]
+output_dir = config.dirs["fig"] + dataset + "/"
+
+# Input filename pattern from the processing script
+input_file = (
+    f"scandinavian_city_zero_degree_crossing_stats_"
+    f"{dataset}_{file_season_tag}_{spatial_method}_{file_years[0]}-{file_years[1]}.nc"
+)
+
+# Figure options
+savefig = False
+fig_dpi = 200
+figsize = (14, 6)
+
+# Map extent in degrees around the city center
+map_buffer_lon = 1.0
+map_buffer_lat = 1.0
+
+# Whether to label the boxes on the map
+label_boxes = False
+
+# Fixed colors for box sizes
+BOX_COLORS = {
+    "small": "tab:red",
+    "medium": "tab:blue",
+    "large": "tab:green",
+}
+
+
+# ---------------------------------------------------------------------
+# 3) functions
+# ---------------------------------------------------------------------
+def build_input_path(input_dir, input_file):
+    """Build full path to the processed NetCDF file."""
+    return os.path.join(input_dir, input_file)
+
+
+def open_processed_dataset(path_nc):
+    """Open processed zero-degree crossing statistics file."""
+    if not os.path.exists(path_nc):
+        raise FileNotFoundError(f"Processed file not found: {path_nc}")
+    return xr.open_dataset(path_nc)
+
+
+def check_city_exists(ds, city_name):
+    """Raise an informative error if the requested city is not in the dataset."""
+    cities = [str(c) for c in ds["city"].values]
+    if city_name not in cities:
+        raise ValueError(f"City '{city_name}' not found in dataset. Available cities: {cities}")
+
+
+def check_season_exists(ds, season):
+    """Raise an informative error if the requested season is not in the dataset."""
+    seasons = [str(s) for s in ds["season"].values]
+    if season not in seasons:
+        raise ValueError(f"Season '{season}' not found in dataset. Available seasons: {seasons}")
+
+
+def subset_years(ds, plot_years):
+    """
+    Subset dataset to requested plot years.
+    """
+    year_start = int(plot_years[0])
+    year_end = int(plot_years[1])
+
+    ds_sub = ds.sel(year=slice(year_start, year_end))
+
+    if ds_sub.sizes.get("year", 0) == 0:
+        raise ValueError(
+            f"No years found in requested plot period {year_start}-{year_end}."
+        )
+
+    return ds_sub
+
+
+def extract_city_season_period(ds, city_name, season, plot_years):
+    """
+    Extract one city, one season, and one time period from the dataset.
+
+    Returns
+    -------
+    ds_sel : xarray.Dataset
+        Dataset subset for one city, one season, and requested years,
+        retaining dimensions year and box_size_index.
+    """
+    check_city_exists(ds, city_name)
+    check_season_exists(ds, season)
+
+    ds_sel = ds.sel(city=city_name, season=season)
+    ds_sel = subset_years(ds_sel, plot_years)
+
+    # Sort box_size_index by numeric delta, so plotting order is logical.
+    if "box_size_delta" in ds_sel.coords:
+        order = np.argsort(ds_sel["box_size_delta"].values)
+        ds_sel = ds_sel.isel(box_size_index=order)
+
+    return ds_sel
+
+
+def get_city_center(ds_city):
+    """Return city center latitude and longitude."""
+    lat0 = float(ds_city["city_lat"].values)
+    lon0 = float(ds_city["city_lon"].values)
+    return lat0, lon0
+
+
+def get_box_info(ds_city):
+    """
+    Return box names and their numeric deltas.
+
+    Returns
+    -------
+    box_names : list of str
+    box_deltas : list of float
+    """
+    box_names = [str(b) for b in ds_city["box_size_index"].values]
+    box_deltas = [float(d) for d in ds_city["box_size_delta"].values]
+    return box_names, box_deltas
+
+
+def add_box_rectangles(ax, lat0, lon0, box_names, box_deltas, label_boxes=True):
+    """
+    Add the city boxes as rectangles on a Cartopy map.
+
+    Each box is defined as:
+        [lon0-delta, lon0+delta] x [lat0-delta, lat0+delta]
+
+    If delta == 0, plot a marker at the city/gridpoint location instead of a rectangle.
+    """
+    for box_name, delta in zip(box_names, box_deltas):
+        color = BOX_COLORS.get(box_name, "black")
+
+        if np.isclose(delta, 0.0):
+            ax.plot(
+                lon0,
+                lat0,
+                marker="s",
+                markersize=8,
+                fillstyle="none",
+                color=color,
+                transform=ccrs.PlateCarree(),
+            )
+            if label_boxes:
+                ax.text(
+                    lon0,
+                    lat0,
+                    f" {box_name}",
+                    color=color,
+                    transform=ccrs.PlateCarree(),
+                    fontsize=9,
+                    ha="left",
+                    va="bottom",
+                )
+        else:
+            rect = Rectangle(
+                (lon0 - delta, lat0 - delta),
+                2.0 * delta,
+                2.0 * delta,
+                fill=False,
+                linewidth=2.0,
+                edgecolor=color,
+                transform=ccrs.PlateCarree(),
+            )
+            ax.add_patch(rect)
+
+            if label_boxes:
+                ax.text(
+                    lon0 + delta,
+                    lat0 + delta,
+                    f" {box_name}",
+                    color=color,
+                    transform=ccrs.PlateCarree(),
+                    fontsize=9,
+                    ha="left",
+                    va="bottom",
+                )
+
+
+def plot_time_series_panel(ax, ds_city, city_name, season, plot_years):
+    """
+    Plot zdc_pct on the left axis only.
+
+    One line per box size, with fixed colors.
+    """
+    years = ds_city["year"].values
+    box_names, _ = get_box_info(ds_city)
+
+    for box_name in box_names:
+        zdc_pct = ds_city["zdc_pct"].sel(box_size_index=box_name)
+        color = BOX_COLORS.get(box_name, "black")
+
+        ax.plot(
+            years,
+            zdc_pct,
+            marker="o",
+            linewidth=2.0,
+            color=color,
+            label=box_name,
+        )
+
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Zero-degree crossing days (%)")
+    ax.set_title(f"{city_name} - {season.upper()} ({plot_years[0]}-{plot_years[1]})")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", frameon=False,fontsize=9)
+
+    return ax
+
+
+def plot_map_panel(ax, ds_city, city_name, map_buffer_lon=2.0, map_buffer_lat=1.5,
+                   label_boxes=True):
+    """
+    Plot a Cartopy map focused on the selected city and overlay the analysis boxes.
+    """
+    lat0, lon0 = get_city_center(ds_city)
+    box_names, box_deltas = get_box_info(ds_city)
+
+    ax.set_extent(
+        [
+            lon0 - map_buffer_lon,
+            lon0 + map_buffer_lon,
+            lat0 - map_buffer_lat,
+            lat0 + map_buffer_lat,
+        ],
+        crs=ccrs.PlateCarree(),
+    )
+
+    ax.add_feature(cfeature.LAND, zorder=0)
+    ax.add_feature(cfeature.OCEAN, zorder=0)
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.6)
+    ax.add_feature(cfeature.LAKES, alpha=0.5)
+    ax.add_feature(cfeature.RIVERS, linewidth=0.5)
+
+    gl = ax.gridlines(draw_labels=True, linewidth=0.4, alpha=0.5)
+    gl.top_labels = False
+    gl.right_labels = False
+
+    # Overlay the boxes
+    add_box_rectangles(
+        ax=ax,
+        lat0=lat0,
+        lon0=lon0,
+        box_names=box_names,
+        box_deltas=box_deltas,
+        label_boxes=label_boxes,
+    )
+
+    ax.set_title("City location and analysis boxes")
+
+
+def make_figure(ds_city, city_name, season, plot_years, figsize=(14, 6),
+                map_buffer_lon=2.0, map_buffer_lat=1.5, label_boxes=True):
+    """
+    Create the two-panel figure.
+
+    Left: time series of zdc_pct
+    Right: map with boxes
+    """
+    fig = plt.figure(figsize=figsize)
+
+    ax_ts = fig.add_subplot(1, 2, 1)
+    plot_time_series_panel(ax_ts, ds_city, city_name, season, plot_years)
+
+    ax_map = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
+    plot_map_panel(
+        ax=ax_map,
+        ds_city=ds_city,
+        city_name=city_name,
+        map_buffer_lon=map_buffer_lon,
+        map_buffer_lat=map_buffer_lat,
+        label_boxes=label_boxes,
+    )
+
+    fig.suptitle(
+        f"Zero-degree crossing statistics for {city_name} ({season.upper()})",
+        y=0.98,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def save_figure(fig, output_dir, dataset, city_name, season, spatial_method, plot_years, dpi=200):
+    """Save figure to file."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    fig_name = (
+        f"plot_zero_degree_crossing_pct_"
+        f"{dataset}_{city_name}_{season}_{spatial_method}_{plot_years[0]}-{plot_years[1]}.png"
+    )
+    fig_path = os.path.join(output_dir, fig_name)
+
+    fig.savefig(fig_path, dpi=dpi, bbox_inches="tight")
+    print(f"Wrote figure: {fig_path}")
+
+
+# ---------------------------------------------------------------------
+# 4) main script
+# ---------------------------------------------------------------------
+if __name__ == "__main__":
+
+    path_nc = build_input_path(input_dir=input_dir, input_file=input_file)
+    ds = open_processed_dataset(path_nc)
+
+    ds_city = extract_city_season_period(
+        ds=ds,
+        city_name=city_name,
+        season=season,
+        plot_years=plot_years,
+    )
+
+    fig = make_figure(
+        ds_city=ds_city,
+        city_name=city_name,
+        season=season,
+        plot_years=plot_years,
+        figsize=figsize,
+        map_buffer_lon=map_buffer_lon,
+        map_buffer_lat=map_buffer_lat,
+        label_boxes=label_boxes,
+    )
+
+    if savefig:
+        save_figure(
+            fig=fig,
+            output_dir=output_dir,
+            dataset=dataset,
+            city_name=city_name,
+            season=season,
+            spatial_method=spatial_method,
+            plot_years=plot_years,
+            dpi=fig_dpi,
+        )
+
+    plt.show()

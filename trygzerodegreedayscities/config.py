@@ -2,13 +2,13 @@
 hard-coded paths in trygzerodegreedayscities
 """
 
-cf_space             = "/nird/projects/NS9873K/etdu/"
+cf_space             = "/nird/datapeak/NS9873K/etdu/"
 proj                 = "/nird/home/edu061/cf-trygzerodegreedayscities/"
 data                 = proj + "data/"
 fig                  = proj + "fig/"
 
-raw                  = '/nird/datapeak/NS9873K/etdu/raw/'
-processed            = '/nird/datapeak/NS9873K/etdu/processed/cf-trygzerodegreedayscities/'
+raw                  = cf_space + 'raw/'
+processed            = cf_space + 'processed/cf-trygzerodegreedayscities/'
 
 senorge_raw          = '/nird/projects/NS9873K/DATA/senorge/'
 senorge_processed    = processed + '/senorge/'
