@@ -81,16 +81,16 @@ file_season_tag = "all"
 
 # Input/output directories
 input_dir = config.dirs["eobs_processed"]
-output_dir = config.dirs["fig"] + 'oppgave_26-03-26/'
+output_dir = config.dirs["fig"] + 'oppgave_26-04-27/'
 
 # Input filename pattern from the processing script
 input_file = (
-    f"scandinavian_city_zero_degree_crossing_stats_"
+    f"scandinavian_city_zero_degree_crossing_with_precipitation_stats_"
     f"{dataset}_{file_season_tag}_{spatial_method}_{file_years[0]}-{file_years[1]}.nc"
 )
 
 # Figure options
-savefig = True
+savefig = False
 fig_dpi = 200
 figsize = (14, 6)
 
