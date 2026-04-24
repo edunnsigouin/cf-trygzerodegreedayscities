@@ -1,0 +1,545 @@
+"""
+Plot seasonal zero-degree crossing statistics for one Scandinavian city.
+
+The script can plot either:
+
+1) zero-degree crossing days without precipitation:
+       tn < 0 and tx > 0
+
+2) zero-degree crossing days with precipitation:
+       tn < 0 and tx > 0 and tp > 0
+
+Use the flag:
+
+    plot_with_precipitation = True / False
+
+to switch between the two input files and figure titles.
+"""
+
+# ---------------------------------------------------------------------
+# 1) imports
+# ---------------------------------------------------------------------
+import os
+from pathlib import Path
+
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from scipy.stats import linregress
+
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+from trygzerodegreedayscities import config
+
+
+# ---------------------------------------------------------------------
+# 2) user input parameters
+# ---------------------------------------------------------------------
+dataset = "eobs"
+
+# Choose whether to plot zero-degree crossings with precipitation or not
+plot_with_precipitation = True
+
+# Plot choices
+season = "djf"                       # "djf", "mam", "jja", or "son"
+spatial_method = "gridpoint_mean"    # "gridpoint_mean" or "city_mean"
+city_name = "Trondheim"
+
+# Years represented by the input file
+file_years = [1951, 2024]
+
+# Years to actually plot
+plot_years = [1951, 2024]
+
+# The processed file contains all seasons
+file_season_tag = "all"
+
+# Directories
+input_dir = config.dirs["eobs_processed"]
+output_dir = config.dirs["fig"] + "oppgave_26-04-27/"
+
+# Figure options
+savefig = True
+fig_dpi = 200
+figsize = (14, 6)
+
+# Map extent around city center
+map_buffer_lon = 1.0
+map_buffer_lat = 1.0
+
+# Label the spatial boxes on the map?
+label_boxes = False
+
+# Colors for box sizes
+BOX_COLORS = {
+    "small": "tab:red",
+    "medium": "tab:blue",
+    "large": "tab:green",
+}
+
+
+# ---------------------------------------------------------------------
+# 3) filenames defined from user choices
+# ---------------------------------------------------------------------
+def get_precip_tag(plot_with_precipitation):
+    """Return a short filename tag based on precipitation choice."""
+    if plot_with_precipitation:
+        return "with_precipitation"
+    return "without_precipitation"
+
+
+def build_input_file(
+    dataset,
+    file_season_tag,
+    spatial_method,
+    file_years,
+    plot_with_precipitation,
+):
+    """Build the input NetCDF filename."""
+    if plot_with_precipitation:
+        return (
+            f"scandinavian_city_zero_degree_crossing_with_precipitation_stats_"
+            f"{dataset}_{file_season_tag}_{spatial_method}_"
+            f"{file_years[0]}-{file_years[1]}.nc"
+        )
+
+    return (
+        f"scandinavian_city_zero_degree_crossing_with_stats_"
+        f"{dataset}_{file_season_tag}_{spatial_method}_"
+        f"{file_years[0]}-{file_years[1]}.nc"
+    )
+
+
+def build_figure_name(
+    dataset,
+    city_name,
+    season,
+    spatial_method,
+    plot_years,
+    plot_with_precipitation,
+):
+    """Build the output figure filename."""
+    precip_tag = get_precip_tag(plot_with_precipitation)
+
+    return (
+        f"timeseries_map_zero_degree_crossing_pct_"
+        f"{precip_tag}_"
+        f"{dataset}_{city_name}_{season}_{spatial_method}_"
+        f"{plot_years[0]}-{plot_years[1]}.png"
+    )
+
+
+# These are created here so you can easily see/change filenames near the top.
+input_file = build_input_file(
+    dataset=dataset,
+    file_season_tag=file_season_tag,
+    spatial_method=spatial_method,
+    file_years=file_years,
+    plot_with_precipitation=plot_with_precipitation,
+)
+
+fig_name = build_figure_name(
+    dataset=dataset,
+    city_name=city_name,
+    season=season,
+    spatial_method=spatial_method,
+    plot_years=plot_years,
+    plot_with_precipitation=plot_with_precipitation,
+)
+
+
+# ---------------------------------------------------------------------
+# 4) helper functions
+# ---------------------------------------------------------------------
+def build_input_path(input_dir, input_file):
+    """Build full path to the processed NetCDF file."""
+    return os.path.join(input_dir, input_file)
+
+
+def open_processed_dataset(path_nc):
+    """Open the processed statistics file."""
+    if not os.path.exists(path_nc):
+        raise FileNotFoundError(f"Processed file not found: {path_nc}")
+    return xr.open_dataset(path_nc, decode_timedelta=False)
+
+
+def check_city_exists(ds, city_name):
+    """Check that the selected city exists in the file."""
+    cities = [str(c) for c in ds["city"].values]
+
+    if city_name not in cities:
+        raise ValueError(
+            f"City '{city_name}' not found in dataset. Available cities: {cities}"
+        )
+
+
+def check_season_exists(ds, season):
+    """Check that the selected season exists in the file."""
+    seasons = [str(s) for s in ds["season"].values]
+
+    if season not in seasons:
+        raise ValueError(
+            f"Season '{season}' not found in dataset. Available seasons: {seasons}"
+        )
+
+
+def subset_years(ds, plot_years):
+    """Select the requested plot years."""
+    year_start = int(plot_years[0])
+    year_end = int(plot_years[1])
+
+    ds_sub = ds.sel(year=slice(year_start, year_end))
+
+    if ds_sub.sizes.get("year", 0) == 0:
+        raise ValueError(
+            f"No years found in requested plot period {year_start}-{year_end}."
+        )
+
+    return ds_sub
+
+
+def extract_city_season_period(ds, city_name, season, plot_years):
+    """
+    Extract one city, one season, and one year period.
+
+    The returned dataset keeps dimensions:
+        year, box_size_index
+    """
+    check_city_exists(ds, city_name)
+    check_season_exists(ds, season)
+
+    ds_sel = ds.sel(city=city_name, season=season)
+    ds_sel = subset_years(ds_sel, plot_years)
+
+    # Sort boxes by numeric size, e.g. small, medium, large.
+    if "box_size_delta" in ds_sel.coords:
+        order = np.argsort(ds_sel["box_size_delta"].values)
+        ds_sel = ds_sel.isel(box_size_index=order)
+
+    return ds_sel
+
+
+def get_city_center(ds_city):
+    """Return adjusted city-center latitude and longitude."""
+    lat0 = float(ds_city["city_lat"].values)
+    lon0 = float(ds_city["city_lon"].values)
+    return lat0, lon0
+
+
+def get_box_info(ds_city):
+    """Return box names and numeric box deltas."""
+    box_names = [str(b) for b in ds_city["box_size_index"].values]
+    box_deltas = [float(d) for d in ds_city["box_size_delta"].values]
+    return box_names, box_deltas
+
+
+def get_plot_labels(plot_with_precipitation):
+    """Return title and y-axis text."""
+    if plot_with_precipitation:
+        main_title = "Zero-degree crossing statistics with precipitation"
+        ylabel = "Zero-degree crossing days with precipitation (%)"
+    else:
+        main_title = "Zero-degree crossing statistics"
+        ylabel = "Zero-degree crossing days (%)"
+
+    return main_title, ylabel
+
+
+# ---------------------------------------------------------------------
+# 5) plotting functions
+# ---------------------------------------------------------------------
+def add_box_rectangles(ax, lat0, lon0, box_names, box_deltas, label_boxes):
+    """
+    Draw the analysis boxes on the map.
+
+    Each box is:
+        lon0 ± delta
+        lat0 ± delta
+    """
+    for box_name, delta in zip(box_names, box_deltas):
+        color = BOX_COLORS.get(box_name, "black")
+
+        # delta = 0 means the box is a single grid point.
+        if np.isclose(delta, 0.0):
+            ax.plot(
+                lon0,
+                lat0,
+                marker="s",
+                markersize=8,
+                fillstyle="none",
+                color=color,
+                transform=ccrs.PlateCarree(),
+            )
+
+            if label_boxes:
+                ax.text(
+                    lon0,
+                    lat0,
+                    f" {box_name}",
+                    color=color,
+                    transform=ccrs.PlateCarree(),
+                    fontsize=9,
+                    ha="left",
+                    va="bottom",
+                )
+
+        else:
+            rect = Rectangle(
+                (lon0 - delta, lat0 - delta),
+                2.0 * delta,
+                2.0 * delta,
+                fill=False,
+                linewidth=2.0,
+                edgecolor=color,
+                transform=ccrs.PlateCarree(),
+            )
+            ax.add_patch(rect)
+
+            if label_boxes:
+                ax.text(
+                    lon0 + delta,
+                    lat0 + delta,
+                    f" {box_name}",
+                    color=color,
+                    transform=ccrs.PlateCarree(),
+                    fontsize=9,
+                    ha="left",
+                    va="bottom",
+                )
+
+
+def plot_time_series_panel(
+    ax,
+    ds_city,
+    city_name,
+    season,
+    plot_years,
+    plot_with_precipitation,
+):
+    """Plot zdc_pct through time, one line per box size, with linear trends."""
+    years = ds_city["year"].values
+    box_names, _ = get_box_info(ds_city)
+
+    _, ylabel = get_plot_labels(plot_with_precipitation)
+
+    for box_name in box_names:
+        zdc_pct = ds_city["zdc_pct"].sel(box_size_index=box_name).values
+        color = BOX_COLORS.get(box_name, "black")
+
+        # Remove missing values before fitting trend
+        valid = np.isfinite(years) & np.isfinite(zdc_pct)
+        years_valid = years[valid]
+        zdc_valid = zdc_pct[valid]
+
+        if len(years_valid) >= 2:
+            trend = linregress(years_valid, zdc_valid)
+
+            slope_per_year = trend.slope
+            slope_per_decade = slope_per_year * 10.0
+            p_value = trend.pvalue
+
+            trend_line = trend.intercept + trend.slope * years_valid
+
+            if p_value < 0.001:
+                sig = "***"
+            elif p_value < 0.01:
+                sig = "**"
+            elif p_value < 0.05:
+                sig = "*"
+            else:
+                sig = "n.s."
+
+            label = (
+                f"{box_name} "
+                f"({slope_per_decade:+.2f} %-points/decade, p={p_value:.3f}, {sig})"
+            )
+
+            # Main time series
+            ax.plot(
+                years,
+                zdc_pct,
+                marker="o",
+                linewidth=2.0,
+                color=color,
+                label=label,
+            )
+
+            # Least-squares trend line
+            ax.plot(
+                years_valid,
+                trend_line,
+                linestyle="--",
+                linewidth=2.0,
+                color=color,
+                alpha=0.8,
+            )
+
+        else:
+            label = f"{box_name} (trend not available)"
+
+            ax.plot(
+                years,
+                zdc_pct,
+                marker="o",
+                linewidth=2.0,
+                color=color,
+                label=label,
+            )
+
+    ax.set_xlabel("Year")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{city_name} - {season.upper()} ({plot_years[0]}-{plot_years[1]})")
+    ax.grid(True, alpha=0.3)
+
+    ax.legend(
+        loc="best",
+        frameon=False,
+        fontsize=9,
+    )
+
+
+def plot_map_panel(
+    ax,
+    ds_city,
+    map_buffer_lon,
+    map_buffer_lat,
+    label_boxes,
+):
+    """Plot city location and spatial boxes."""
+    lat0, lon0 = get_city_center(ds_city)
+    box_names, box_deltas = get_box_info(ds_city)
+
+    ax.set_extent(
+        [
+            lon0 - map_buffer_lon,
+            lon0 + map_buffer_lon,
+            lat0 - map_buffer_lat,
+            lat0 + map_buffer_lat,
+        ],
+        crs=ccrs.PlateCarree(),
+    )
+
+    ax.add_feature(cfeature.LAND, zorder=0)
+    ax.add_feature(cfeature.OCEAN, zorder=0)
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.6)
+    ax.add_feature(cfeature.LAKES, alpha=0.5)
+    ax.add_feature(cfeature.RIVERS, linewidth=0.5)
+
+    gl = ax.gridlines(draw_labels=True, linewidth=0.4, alpha=0.5)
+    gl.top_labels = False
+    gl.right_labels = False
+
+    add_box_rectangles(
+        ax=ax,
+        lat0=lat0,
+        lon0=lon0,
+        box_names=box_names,
+        box_deltas=box_deltas,
+        label_boxes=label_boxes,
+    )
+
+    ax.set_title("City location and analysis boxes")
+
+
+def make_figure(
+    ds_city,
+    city_name,
+    season,
+    plot_years,
+    plot_with_precipitation,
+    figsize,
+    map_buffer_lon,
+    map_buffer_lat,
+    label_boxes,
+):
+    """Create the full two-panel figure."""
+    fig = plt.figure(figsize=figsize)
+
+    # Left panel: time series
+    ax_ts = fig.add_subplot(1, 2, 1)
+    plot_time_series_panel(
+        ax=ax_ts,
+        ds_city=ds_city,
+        city_name=city_name,
+        season=season,
+        plot_years=plot_years,
+        plot_with_precipitation=plot_with_precipitation,
+    )
+
+    # Right panel: map
+    ax_map = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
+    plot_map_panel(
+        ax=ax_map,
+        ds_city=ds_city,
+        map_buffer_lon=map_buffer_lon,
+        map_buffer_lat=map_buffer_lat,
+        label_boxes=label_boxes,
+    )
+
+    main_title, _ = get_plot_labels(plot_with_precipitation)
+
+    fig.suptitle(
+        f"{main_title} for {city_name} ({season.upper()})",
+        y=0.98,
+    )
+
+    fig.tight_layout()
+    return fig
+
+
+def save_figure(fig, output_dir, fig_name, dpi):
+    """Save the figure."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    fig_path = os.path.join(output_dir, fig_name)
+    fig.savefig(fig_path, dpi=dpi, bbox_inches="tight")
+
+    print(f"Wrote figure: {fig_path}")
+
+
+# ---------------------------------------------------------------------
+# 6) main script
+# ---------------------------------------------------------------------
+if __name__ == "__main__":
+
+    path_nc = build_input_path(
+        input_dir=input_dir,
+        input_file=input_file,
+    )
+
+    print(f"Reading: {path_nc}")
+    print(f"Figure name: {fig_name}")
+
+    ds = open_processed_dataset(path_nc)
+
+    ds_city = extract_city_season_period(
+        ds=ds,
+        city_name=city_name,
+        season=season,
+        plot_years=plot_years,
+    )
+
+    fig = make_figure(
+        ds_city=ds_city,
+        city_name=city_name,
+        season=season,
+        plot_years=plot_years,
+        plot_with_precipitation=plot_with_precipitation,
+        figsize=figsize,
+        map_buffer_lon=map_buffer_lon,
+        map_buffer_lat=map_buffer_lat,
+        label_boxes=label_boxes,
+    )
+
+    if savefig:
+        save_figure(
+            fig=fig,
+            output_dir=output_dir,
+            fig_name=fig_name,
+            dpi=fig_dpi,
+        )
+
+    plt.show()
