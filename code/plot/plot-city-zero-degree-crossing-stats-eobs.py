@@ -40,12 +40,12 @@ from trygzerodegreedayscities import config
 dataset = "eobs"
 
 # Choose whether to plot zero-degree crossings with precipitation or not
-plot_with_precipitation = True
+plot_with_precipitation = False
 
 # Plot choices
 season = "djf"                       # "djf", "mam", "jja", or "son"
 spatial_method = "gridpoint_mean"    # "gridpoint_mean" or "city_mean"
-city_name = "Trondheim"
+city_name = "Trondheim"             # "Aarhus", "Bergen", "Copenhagen", "Gothenburg", "Malmo", "Odense", "Oslo", "Stockholm", "Tromso", "Trondheim"
 
 # Years represented by the input file
 file_years = [1951, 2024]
