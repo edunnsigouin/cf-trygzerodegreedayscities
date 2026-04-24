@@ -1,86 +1,34 @@
 """
-Create historical statistics for thaw-precipitation zero-degree crossing days
+Create historical seasonal statistics for zero-degree crossing days
 around Scandinavian cities.
 
-A thaw-precipitation zero-degree crossing day is defined as a day where:
-    tn < 0  and  tx > 0  and  tp > 0
-where:
-    tn = daily minimum 2m temperature
-    tx = daily maximum 2m temperature
-    tp = daily precipitation
+The script can calculate either:
 
-The script is organized as follows:
-1) User-defined settings:
-   - choose dataset (E-OBS now, ERA5 later)
-   - choose years, season(s), city/cities, box sizes, and spatial method
-   - choose whether to write CSV and/or NetCDF
+1) Zero-degree crossing days without precipitation:
+       tn < 0 and tx > 0
 
-2) Read daily tn, tx, and tp files year by year:
-   - for E-OBS, files are assumed to look like:
-         tn_0.1x0.1_1950.nc
-         tx_0.1x0.1_1950.nc
-         tp_0.1x0.1_1950.nc
-   - files are expected in:
-         config.dirs['eobs_raw'] + 'tn'
-         config.dirs['eobs_raw'] + 'tx'
-         config.dirs['eobs_raw'] + 'tp'
-   - the script is written so ERA5 can be added later by editing the
-     dataset configuration block only
+2) Zero-degree crossing days with precipitation:
+       tn < 0 and tx > 0 and tp > 0
 
-3) Before extracting city boxes:
-   - each requested city center is snapped to the nearest valid land grid point
-   - this avoids choosing ocean-only central grid cells with NaNs
-   - the nearest valid point is determined from a reference year
-   - both original and adjusted city coordinates are stored in the output
+Use:
 
-4) For each city and each box size:
-   - subset a lat/lon box around the adjusted city center
-   - compute daily thaw-precipitation zero-degree crossing flags
-   - assign season and "season-year"
-   - important: DJF is assigned to the year of January-February
-     (e.g. Dec 2003 + Jan/Feb 2004 belongs to DJF 2004)
+    include_precipitation = True
 
-5) Two different spatial methods are available:
-   A) spatial_method = "gridpoint_mean"
-      - first calculate event days at each individual grid cell
-      - then aggregate to seasonal counts / percentages at each grid cell
-      - finally average those seasonal values across all grid cells in the box
-      - interpretation:
-            "average seasonal event statistics per grid cell in the box"
+to include the tp > 0 condition.
 
-   B) spatial_method = "city_mean"
-      - first calculate daily box-mean tn, tx, and tp
-      - then define event days from these box-mean daily values
-      - then aggregate to seasonal counts / percentages
-      - interpretation:
-            "seasonal event statistics of the city-box mean temperature/precipitation"
+Use:
 
-6) For each year, city, box size, and season:
-   - compute:
-       a) zdc_days : number of event days
-       b) zdc_pct  : percentage of valid days in that season that are
-                     event days
+    include_precipitation = False
 
-7) Output:
-   - xarray Dataset with dimensions:
-         (year, city, box_size_index, season)
-   - optional write to NetCDF and/or CSV
+to ignore precipitation.
 
-8) Metadata written to the NetCDF output:
-   - spatial_method is stored as global metadata
-   - original and adjusted city center latitudes / longitudes are stored
-     as coordinates on the city dimension
-   - box_size_index is stored as a coordinate dimension
-   - the numeric half-width of each box is stored as:
-         box_size_delta(box_size_index)
-   - this makes the file self-describing and machine-readable
+Output filenames match the plotting script:
 
-Notes:
-- The code assumes the raw files contain dimensions
-  (time, latitude, longitude).
-- Missing values are handled through xarray decoding.
-- The script currently starts with Aarhus, but more cities can be added
-  to the CITY_COORDS dictionary.
+With precipitation:
+    scandinavian_city_zero_degree_crossing_with_precipitation_stats_...
+
+Without precipitation:
+    scandinavian_city_zero_degree_crossing_with_stats_...
 """
 
 # ---------------------------------------------------------------------
@@ -97,25 +45,28 @@ from trygzerodegreedayscities import config
 
 
 # ---------------------------------------------------------------------
-# 2) user defined input parameters
+# 2) user input parameters
 # ---------------------------------------------------------------------
-dataset = "eobs"                  # "eobs" or "era5" (era5 config placeholder included)
-years   = [1951, 2024]            # inclusive range: [start_year, end_year]
-season  = "all"                   # "djf", "mam", "jja", "son", or "all"
+dataset = "eobs"                  # "eobs" or "era5"
+years = [1951, 2024]              # inclusive range: [start_year, end_year]
+season = "all"                    # "djf", "mam", "jja", "son", or "all"
+
+# Include precipitation condition?
+# True  -> event is tn < 0 and tx > 0 and tp > 0
+# False -> event is tn < 0 and tx > 0
+include_precipitation = True
 
 # Spatial method:
 #   "gridpoint_mean" -> event condition at each grid point, then spatial mean
-#   "city_mean"      -> spatial mean of tn, tx, and tp first, then event condition
+#   "city_mean"      -> spatial mean first, then event condition
 spatial_method = "gridpoint_mean"
 
 # Output control
-write2csv  = True
-write2nc   = True
+write2csv = True
+write2nc = True
 output_dir = config.dirs["eobs_processed"]
 
 # Reference-year settings for snapping city centers to valid grid cells.
-# A candidate grid cell is accepted if the fraction of valid tn/tx/tp days in
-# the reference year exceeds this threshold.
 snap_reference_year = None        # None -> use years_list[0]
 snap_valid_fraction_threshold = 0.95
 
@@ -130,8 +81,8 @@ CITY_COORDS = {
     "Stockholm":  {"lat": 59.3293, "lon": 18.0686},
     "Gothenburg": {"lat": 57.7089, "lon": 11.9746},
     "Malmo":      {"lat": 55.6050, "lon": 13.0038},
+    "Tromso":     {"lat": 69.6492, "lon": 18.9553},
 }
-
 
 # Box sizes around each city center.
 # delta means:
@@ -143,8 +94,10 @@ BOX_SIZE_DELTAS = {
     "large": 0.2,
 }
 
-# Dataset-specific configuration.
-# Edit the ERA5 paths / filenames later when needed.
+
+# ---------------------------------------------------------------------
+# 3) dataset configuration
+# ---------------------------------------------------------------------
 DATASET_CONFIG = {
     "eobs": {
         "tn_dir": os.path.join(config.dirs["eobs_raw"], "tn"),
@@ -161,7 +114,6 @@ DATASET_CONFIG = {
     },
     "era5": {
         # Placeholder config for later use.
-        # Update these paths and file templates when you switch to ERA5.
         "tn_dir": os.path.join(config.dirs.get("era5_raw", ""), "tn"),
         "tx_dir": os.path.join(config.dirs.get("era5_raw", ""), "tx"),
         "tp_dir": os.path.join(config.dirs.get("era5_raw", ""), "tp"),
@@ -178,80 +130,120 @@ DATASET_CONFIG = {
 
 
 # ---------------------------------------------------------------------
-# 3) functions
+# 4) simple helper functions
 # ---------------------------------------------------------------------
 def get_year_list(years_in):
-    """Return an inclusive list of integer years."""
+    """Return inclusive list of years."""
     if len(years_in) != 2:
         raise ValueError("years must be given as [start_year, end_year].")
+
     y0, y1 = int(years_in[0]), int(years_in[1])
+
     if y1 < y0:
         raise ValueError("end_year must be >= start_year.")
+
     return list(range(y0, y1 + 1))
 
 
 def get_season_list(season_in):
-    """Return a normalized list of seasons."""
+    """Return normalized season list."""
     valid = ["djf", "mam", "jja", "son"]
     s = season_in.lower()
+
     if s == "all":
         return valid
+
     if s not in valid:
         raise ValueError(f"season must be one of {valid + ['all']}")
+
     return [s]
 
 
 def build_file_path(dataset_name, var_type, year):
-    """
-    Build file path for tn, tx, or tp for a given year.
-
-    Parameters
-    ----------
-    dataset_name : str
-        Dataset identifier, e.g. 'eobs' or 'era5'.
-    var_type : str
-        Either 'tn', 'tx', or 'tp'.
-    year : int
-        Year of file to open.
-    """
+    """Build path to tn, tx, or tp file."""
     cfg = DATASET_CONFIG[dataset_name]
 
     if var_type == "tn":
         return os.path.join(cfg["tn_dir"], cfg["file_template_tn"].format(year=year))
+
     if var_type == "tx":
         return os.path.join(cfg["tx_dir"], cfg["file_template_tx"].format(year=year))
+
     if var_type == "tp":
         return os.path.join(cfg["tp_dir"], cfg["file_template_tp"].format(year=year))
 
     raise ValueError("var_type must be 'tn', 'tx', or 'tp'.")
 
 
+def get_output_file_stub(
+    dataset_name,
+    season_name,
+    spatial_method,
+    years_list,
+    include_precipitation,
+):
+    """Build output filename stem matching the plotting script."""
+    year_start = min(years_list)
+    year_end = max(years_list)
+
+    if include_precipitation:
+        prefix = "scandinavian_city_zero_degree_crossing_with_precipitation_stats"
+    else:
+        prefix = "scandinavian_city_zero_degree_crossing_with_stats"
+
+    return (
+        f"{prefix}_"
+        f"{dataset_name}_{season_name}_{spatial_method}_"
+        f"{year_start}-{year_end}"
+    )
+
+
+def get_event_description(include_precipitation):
+    """Return readable event definition."""
+    if include_precipitation:
+        return "tn < 0 C, tx > 0 C, and tp > 0"
+
+    return "tn < 0 C and tx > 0 C"
+
+
+# ---------------------------------------------------------------------
+# 5) spatial selection and city snapping
+# ---------------------------------------------------------------------
 def find_nearest_valid_gridpoint(
     ds_tn,
     ds_tx,
-    ds_tp,
-    lat0,
-    lon0,
+    ds_tp=None,
+    lat0=None,
+    lon0=None,
     lat_name="latitude",
     lon_name="longitude",
     valid_fraction_threshold=0.95,
+    include_precipitation=True,
 ):
-    valid_time = (
-        xr.ufuncs.isfinite(ds_tn)
-        & xr.ufuncs.isfinite(ds_tx)
-        & xr.ufuncs.isfinite(ds_tp)
-    )
+    """
+    Find the nearest valid grid point to the requested city coordinate.
+
+    If include_precipitation=True, a valid grid point requires valid tn, tx, and tp.
+    If include_precipitation=False, a valid grid point requires valid tn and tx.
+    """
+    valid_time = xr.ufuncs.isfinite(ds_tn) & xr.ufuncs.isfinite(ds_tx)
+
+    #if include_precipitation:
+    #    if ds_tp is None:
+    #        raise ValueError("ds_tp must be provided when include_precipitation=True.")
+    #    valid_time = valid_time & xr.ufuncs.isfinite(ds_tp)
+
     valid_fraction = valid_time.mean(dim="time")
     valid_grid = valid_fraction > valid_fraction_threshold
 
-    # Ensure the 2D field is ordered exactly as (latitude, longitude)
+    # Force consistent dimension order before using numpy indexing.
     valid_grid = valid_grid.transpose(lat_name, lon_name)
 
     lat_idx, lon_idx = np.where(valid_grid.values)
 
     if len(lat_idx) == 0:
         raise ValueError(
-            "No valid grid cells found in reference dataset using "
+            "No valid grid cells found using "
             f"valid_fraction_threshold={valid_fraction_threshold}."
         )
 
@@ -269,80 +261,98 @@ def adjust_city_centers_to_valid_grid(
     city_coords,
     reference_year,
     valid_fraction_threshold=0.95,
+    include_precipitation=True,
 ):
     """
-    Snap each city center to the nearest valid grid point in the dataset.
+    Snap each city center to the nearest valid grid point.
 
-    The adjusted coordinates are used as the city centers for all box
-    extractions so that even boxes around coastal cities are centered on
-    a land grid point with valid data.
+    This avoids centering a box on an ocean-only grid point.
     """
     cfg = DATASET_CONFIG[dataset_name]
 
     tn_path = build_file_path(dataset_name, "tn", reference_year)
     tx_path = build_file_path(dataset_name, "tx", reference_year)
-    tp_path = build_file_path(dataset_name, "tp", reference_year)
 
     if not os.path.exists(tn_path):
         raise FileNotFoundError(f"Missing file: {tn_path}")
     if not os.path.exists(tx_path):
         raise FileNotFoundError(f"Missing file: {tx_path}")
-    if not os.path.exists(tp_path):
-        raise FileNotFoundError(f"Missing file: {tp_path}")
+
+    tp_path = None
+    if include_precipitation:
+        tp_path = build_file_path(dataset_name, "tp", reference_year)
+        if not os.path.exists(tp_path):
+            raise FileNotFoundError(f"Missing file: {tp_path}")
 
     adjusted = {}
 
-    with (
-        xr.open_dataset(tn_path) as ds_tn,
-        xr.open_dataset(tx_path) as ds_tx,
-        xr.open_dataset(tp_path) as ds_tp,
-    ):
+    with xr.open_dataset(tn_path) as ds_tn, xr.open_dataset(tx_path) as ds_tx:
         tn = ds_tn[cfg["tn_var"]]
         tx = ds_tx[cfg["tx_var"]]
-        tp = ds_tp[cfg["tp_var"]]
 
-        for city_name, coord in city_coords.items():
-            lat0 = coord["lat"]
-            lon0 = coord["lon"]
+        if include_precipitation:
+            with xr.open_dataset(tp_path) as ds_tp:
+                tp = ds_tp[cfg["tp_var"]]
 
-            lat_adj, lon_adj = find_nearest_valid_gridpoint(
-                ds_tn=tn,
-                ds_tx=tx,
-                ds_tp=tp,
-                lat0=lat0,
-                lon0=lon0,
-                lat_name=cfg["lat_name"],
-                lon_name=cfg["lon_name"],
-                valid_fraction_threshold=valid_fraction_threshold,
-            )
+                for city_name, coord in city_coords.items():
+                    lat_adj, lon_adj = find_nearest_valid_gridpoint(
+                        ds_tn=tn,
+                        ds_tx=tx,
+                        ds_tp=tp,
+                        lat0=coord["lat"],
+                        lon0=coord["lon"],
+                        lat_name=cfg["lat_name"],
+                        lon_name=cfg["lon_name"],
+                        valid_fraction_threshold=valid_fraction_threshold,
+                        include_precipitation=True,
+                    )
 
-            adjusted[city_name] = {
-                "lat": lat_adj,
-                "lon": lon_adj,
-                "orig_lat": lat0,
-                "orig_lon": lon0,
-            }
+                    adjusted[city_name] = {
+                        "lat": lat_adj,
+                        "lon": lon_adj,
+                        "orig_lat": coord["lat"],
+                        "orig_lon": coord["lon"],
+                    }
 
-            print(
-                f"{city_name:10s}: original=({lat0:.4f}, {lon0:.4f}) "
-                f"-> adjusted=({lat_adj:.4f}, {lon_adj:.4f})"
-            )
+                    print(
+                        f"{city_name:10s}: original=({coord['lat']:.4f}, {coord['lon']:.4f}) "
+                        f"-> adjusted=({lat_adj:.4f}, {lon_adj:.4f})"
+                    )
+
+        else:
+            for city_name, coord in city_coords.items():
+                lat_adj, lon_adj = find_nearest_valid_gridpoint(
+                    ds_tn=tn,
+                    ds_tx=tx,
+                    ds_tp=None,
+                    lat0=coord["lat"],
+                    lon0=coord["lon"],
+                    lat_name=cfg["lat_name"],
+                    lon_name=cfg["lon_name"],
+                    valid_fraction_threshold=valid_fraction_threshold,
+                    include_precipitation=False,
+                )
+
+                adjusted[city_name] = {
+                    "lat": lat_adj,
+                    "lon": lon_adj,
+                    "orig_lat": coord["lat"],
+                    "orig_lon": coord["lon"],
+                }
+
+                print(
+                    f"{city_name:10s}: original=({coord['lat']:.4f}, {coord['lon']:.4f}) "
+                    f"-> adjusted=({lat_adj:.4f}, {lon_adj:.4f})"
+                )
 
     return adjusted
 
 
 def subset_latlon(ds, lat0, lon0, delta, lat_name="latitude", lon_name="longitude"):
     """
-    Subset a rectangular lat/lon box around a city center.
+    Subset a lat/lon box around a city center.
 
-    The selected box is:
-        lat in [lat0-delta, lat0+delta]
-        lon in [lon0-delta, lon0+delta]
-
-    Special case:
-    - if delta == 0, select the single nearest grid point to (lat0, lon0)
-
-    Works for coordinates that are either ascending or descending in latitude.
+    If delta == 0, select the nearest single grid point.
     """
     if np.isclose(delta, 0.0):
         ds_sub = ds.sel(
@@ -350,18 +360,21 @@ def subset_latlon(ds, lat0, lon0, delta, lat_name="latitude", lon_name="longitud
             method="nearest",
         )
 
+        # Keep latitude and longitude as length-one dimensions.
         ds_sub = ds_sub.expand_dims(
             {
                 lat_name: [ds_sub[lat_name].item()],
                 lon_name: [ds_sub[lon_name].item()],
             }
         )
+
         return ds_sub
 
     lat_min, lat_max = lat0 - delta, lat0 + delta
     lon_min, lon_max = lon0 - delta, lon0 + delta
 
     lat_values = ds[lat_name].values
+
     if lat_values[0] < lat_values[-1]:
         lat_slice = slice(lat_min, lat_max)
     else:
@@ -376,79 +389,131 @@ def subset_latlon(ds, lat0, lon0, delta, lat_name="latitude", lon_name="longitud
 
     if ds_sub.sizes.get(lat_name, 0) == 0 or ds_sub.sizes.get(lon_name, 0) == 0:
         raise ValueError(
-            f"No grid cells found in box around lat={lat0}, lon={lon0}, delta={delta}"
+            f"No grid cells found around lat={lat0}, lon={lon0}, delta={delta}"
         )
 
     return ds_sub
 
 
-def open_tn_tx_tp_for_box(dataset_name, year, lat0, lon0, delta):
+# ---------------------------------------------------------------------
+# 6) reading data
+# ---------------------------------------------------------------------
+def force_same_latlon_as_reference(ds, ds_ref, lat_name="latitude", lon_name="longitude"):
     """
-    Open tn, tx, and tp for one year, subset to the requested city box,
-    and return a Dataset with only the required spatial domain loaded.
+    Force ds to use exactly the same lat/lon coordinates as ds_ref.
+
+    This avoids xarray alignment problems caused by tiny floating-point
+    differences in latitude/longitude values between tn, tx, and tp files.
+    """
+    return ds.assign_coords(
+        {
+            lat_name: ds_ref[lat_name].values,
+            lon_name: ds_ref[lon_name].values,
+        }
+    )
+
+def open_tn_tx_tp_for_box(
+    dataset_name,
+    year,
+    lat0,
+    lon0,
+    delta,
+    include_precipitation=True,
+):
+    """
+    Open tn and tx, optionally tp, for one year and subset to city box.
+
+    Important:
+    After subsetting, tx and tp are forced to use exactly the same lat/lon
+    coordinates as tn. This prevents xarray from creating duplicate latitude
+    or longitude coordinates due to tiny floating-point differences.
     """
     cfg = DATASET_CONFIG[dataset_name]
 
+    lat_name = cfg["lat_name"]
+    lon_name = cfg["lon_name"]
+
     tn_path = build_file_path(dataset_name, "tn", year)
     tx_path = build_file_path(dataset_name, "tx", year)
-    tp_path = build_file_path(dataset_name, "tp", year)
 
     if not os.path.exists(tn_path):
         raise FileNotFoundError(f"Missing file: {tn_path}")
     if not os.path.exists(tx_path):
         raise FileNotFoundError(f"Missing file: {tx_path}")
-    if not os.path.exists(tp_path):
-        raise FileNotFoundError(f"Missing file: {tp_path}")
 
-    with (
-        xr.open_dataset(tn_path) as ds_tn,
-        xr.open_dataset(tx_path) as ds_tx,
-        xr.open_dataset(tp_path) as ds_tp,
-    ):
+    with xr.open_dataset(tn_path) as ds_tn, xr.open_dataset(tx_path) as ds_tx:
         ds_tn = subset_latlon(
             ds_tn,
             lat0=lat0,
             lon0=lon0,
             delta=delta,
-            lat_name=cfg["lat_name"],
-            lon_name=cfg["lon_name"],
+            lat_name=lat_name,
+            lon_name=lon_name,
         )
+
         ds_tx = subset_latlon(
             ds_tx,
             lat0=lat0,
             lon0=lon0,
             delta=delta,
-            lat_name=cfg["lat_name"],
-            lon_name=cfg["lon_name"],
-        )
-        ds_tp = subset_latlon(
-            ds_tp,
-            lat0=lat0,
-            lon0=lon0,
-            delta=delta,
-            lat_name=cfg["lat_name"],
-            lon_name=cfg["lon_name"],
+            lat_name=lat_name,
+            lon_name=lon_name,
         )
 
-        ds_out = xr.Dataset(
-            {
-                "tn": ds_tn[cfg["tn_var"]],
-                "tx": ds_tx[cfg["tx_var"]],
-                "tp": ds_tp[cfg["tp_var"]],
-            }
-        ).load()
+        # Force tx coordinates to match tn exactly.
+        ds_tx = force_same_latlon_as_reference(
+            ds=ds_tx,
+            ds_ref=ds_tn,
+            lat_name=lat_name,
+            lon_name=lon_name,
+        )
+
+        data_vars = {
+            "tn": ds_tn[cfg["tn_var"]],
+            "tx": ds_tx[cfg["tx_var"]],
+        }
+
+        if include_precipitation:
+            tp_path = build_file_path(dataset_name, "tp", year)
+
+            if not os.path.exists(tp_path):
+                raise FileNotFoundError(f"Missing file: {tp_path}")
+
+            with xr.open_dataset(tp_path) as ds_tp:
+                ds_tp = subset_latlon(
+                    ds_tp,
+                    lat0=lat0,
+                    lon0=lon0,
+                    delta=delta,
+                    lat_name=lat_name,
+                    lon_name=lon_name,
+                )
+
+                # Force tp coordinates to match tn exactly.
+                ds_tp = force_same_latlon_as_reference(
+                    ds=ds_tp,
+                    ds_ref=ds_tn,
+                    lat_name=lat_name,
+                    lon_name=lon_name,
+                )
+
+                data_vars["tp"] = ds_tp[cfg["tp_var"]]
+
+        ds_out = xr.Dataset(data_vars).load()
 
     return ds_out
 
 
+# ---------------------------------------------------------------------
+# 7) season handling and event calculation
+# ---------------------------------------------------------------------
 def assign_season_and_season_year(ds):
     """
-    Add:
-      - season: ["djf", "mam", "jja", "son"]
-      - season_year: integer year, with DJF assigned to Jan-Feb year
+    Add season and season_year coordinates.
 
+    DJF is assigned to the year of January-February.
     Example:
-      Dec 2003, Jan 2004, Feb 2004 -> season='djf', season_year=2004
+        Dec 2003 + Jan-Feb 2004 -> DJF 2004
     """
     month = ds["time"].dt.month
     year = ds["time"].dt.year
@@ -467,42 +532,51 @@ def assign_season_and_season_year(ds):
         season=("time", season_coord.data),
         season_year=("time", season_year.data),
     )
+
     return ds
 
 
-def spatial_mean_temperature_precip(ds, lat_name="latitude", lon_name="longitude"):
+def spatial_mean_temperature_precip(
+    ds,
+    lat_name="latitude",
+    lon_name="longitude",
+    include_precipitation=True,
+):
     """
-    Compute daily box-mean tn, tx, and tp.
+    Compute daily box-mean tn, tx, and optionally tp.
 
-    Missing values are ignored in the spatial mean.
+    Used by spatial_method='city_mean'.
     """
-    return xr.Dataset(
-        {
-            "tn": ds["tn"].mean(dim=[lat_name, lon_name], skipna=True),
-            "tx": ds["tx"].mean(dim=[lat_name, lon_name], skipna=True),
-            "tp": ds["tp"].mean(dim=[lat_name, lon_name], skipna=True),
-        }
-    )
+    data_vars = {
+        "tn": ds["tn"].mean(dim=[lat_name, lon_name], skipna=True),
+        "tx": ds["tx"].mean(dim=[lat_name, lon_name], skipna=True),
+    }
+
+    if include_precipitation:
+        data_vars["tp"] = ds["tp"].mean(dim=[lat_name, lon_name], skipna=True)
+
+    return xr.Dataset(data_vars)
 
 
-def compute_zero_degree_crossing(ds):
+def compute_zero_degree_crossing(ds, include_precipitation=True):
     """
     Compute daily event flags and valid-day mask.
 
-    Event definition:
-        tn < 0  and  tx > 0  and  tp > 0
+    If include_precipitation=True:
+        event = tn < 0 and tx > 0 and tp > 0
 
-    This function works both for:
-    - gridded input with dimensions (time, latitude, longitude)
-    - box-mean input with dimension (time)
+    If include_precipitation=False:
+        event = tn < 0 and tx > 0
     """
-    valid = (
-        xr.ufuncs.isfinite(ds["tn"])
-        & xr.ufuncs.isfinite(ds["tx"])
-        & xr.ufuncs.isfinite(ds["tp"])
-    )
-    crossing = ( (ds["tn"] < 0.0) & (ds["tx"] > 0.0) & (ds["tp"] > 0.0) & valid )
-    
+    valid = xr.ufuncs.isfinite(ds["tn"]) & xr.ufuncs.isfinite(ds["tx"])
+    crossing = (ds["tn"] < 0.0) & (ds["tx"] > 0.0)
+
+    if include_precipitation:
+        valid = valid & xr.ufuncs.isfinite(ds["tp"])
+        crossing = crossing & (ds["tp"] > 0.0)
+
+    crossing = crossing & valid
+
     return xr.Dataset(
         {
             "crossing": crossing.astype(np.int16),
@@ -514,16 +588,21 @@ def compute_zero_degree_crossing(ds):
 
 def aggregate_crossing_by_season(ds_cross):
     """
-    Aggregate daily crossing and valid flags to seasonal statistics.
+    Aggregate daily event flags to seasonal statistics.
 
-    Returns a Dataset with:
-      - zdc_days
-      - zdc_pct
-      - n_valid_days
+    Returns:
+        zdc_days
+        zdc_pct
+        n_valid_days
     """
     crossing_days = ds_cross["crossing"].groupby(["season_year", "season"]).sum("time")
     valid_days = ds_cross["valid"].groupby(["season_year", "season"]).sum("time")
-    crossing_pct = xr.where(valid_days > 0, 100.0 * crossing_days / valid_days, np.nan)
+
+    crossing_pct = xr.where(
+        valid_days > 0,
+        100.0 * crossing_days / valid_days,
+        np.nan,
+    )
 
     return xr.Dataset(
         {
@@ -538,12 +617,14 @@ def reduce_gridpoint_stats_to_box(ds_stats, lat_name="latitude", lon_name="longi
     """
     Average seasonal grid-point statistics across the box.
 
-    Used when:
-        spatial_method = 'gridpoint_mean'
+    Used by spatial_method='gridpoint_mean'.
     """
     return ds_stats.mean(dim=[lat_name, lon_name], skipna=True)
 
 
+# ---------------------------------------------------------------------
+# 8) main calculation
+# ---------------------------------------------------------------------
 def compute_seasonal_stats_for_box(
     dataset_name,
     city_name,
@@ -554,41 +635,39 @@ def compute_seasonal_stats_for_box(
     years_list,
     seasons,
     spatial_method="gridpoint_mean",
+    include_precipitation=True,
 ):
     """
-    For one city and one box size:
-    - open all required yearly subsets
-    - compute event statistics
-    - aggregate by season and season_year
-    - return Dataset with dims (year, season)
+    Compute seasonal statistics for one city and one box size.
 
-    Notes on n_valid_days
-    ---------------------
-    n_valid_days is defined here as a box-level day count:
-        a day is valid if at least one grid cell in the box has valid
-        tn, tx, and tp values.
+    For gridpoint_mean:
+        - event is computed at each grid cell
+        - seasonal event counts are computed at each grid cell
+        - zdc_days is averaged across grid cells
+        - n_valid_days is a box-level count of valid calendar days
 
-    This means seasonal n_valid_days will be close to the number of
-    calendar days in the season (e.g. about 90 for DJF) as long as the
-    box contains usable land points with data.
-
-    For spatial_method == "gridpoint_mean":
-    - zdc_days is still the spatial mean of seasonal event counts across
-      grid cells in the box
-    - n_valid_days is box-level
-    - zdc_pct is recomputed using:
-          zdc_pct = 100 * zdc_days / n_valid_days
+    For city_mean:
+        - tn, tx, and optionally tp are averaged over the box first
+        - event is computed from the box-mean daily time series
     """
     cfg = DATASET_CONFIG[dataset_name]
     lat_name = cfg["lat_name"]
     lon_name = cfg["lon_name"]
 
-    # Include the previous year so December can be used for DJF of the first year.
+    # Include previous year so December is available for first DJF.
     read_years = list(range(min(years_list) - 1, max(years_list) + 1))
 
     ds_list = []
+
     for year in read_years:
-        ds_y = open_tn_tx_tp_for_box(dataset_name, year, lat0, lon0, delta)
+        ds_y = open_tn_tx_tp_for_box(
+            dataset_name=dataset_name,
+            year=year,
+            lat0=lat0,
+            lon0=lon0,
+            delta=delta,
+            include_precipitation=include_precipitation,
+        )
         ds_list.append(ds_y)
 
     ds = xr.concat(ds_list, dim="time").sortby("time")
@@ -597,33 +676,34 @@ def compute_seasonal_stats_for_box(
     # Keep only requested seasons and requested season-years.
     ds = ds.where(ds["season"].isin(seasons), drop=True)
     ds = ds.where(
-        (ds["season_year"] >= min(years_list)) &
-        (ds["season_year"] <= max(years_list)),
+        (ds["season_year"] >= min(years_list))
+        & (ds["season_year"] <= max(years_list)),
         drop=True,
     )
 
     if spatial_method == "gridpoint_mean":
-        # Crossing at each grid point first.
-        ds_cross = compute_zero_degree_crossing(ds)
+        ds_cross = compute_zero_degree_crossing(
+            ds,
+            include_precipitation=include_precipitation,
+        )
 
-        # Seasonal stats at each grid point.
+        # Seasonal stats at each grid cell.
         ds_stats = aggregate_crossing_by_season(ds_cross)
 
-        # Spatial mean across the box for zdc_days and the initial zdc_pct.
+        # Spatial mean for zdc_days.
         ds_out = reduce_gridpoint_stats_to_box(
             ds_stats,
             lat_name=lat_name,
             lon_name=lon_name,
         )
 
-        # Redefine n_valid_days as a box-level valid-day count:
+        # Box-level valid-day count:
         # a day is valid if at least one grid cell in the box is valid.
         valid_any = ds_cross["valid"].any(dim=[lat_name, lon_name])
         n_valid_days_box = valid_any.groupby(["season_year", "season"]).sum("time")
-
         ds_out["n_valid_days"] = n_valid_days_box
 
-        # Recompute percentage so it matches the new box-level denominator.
+        # Recompute percentage with box-level denominator.
         ds_out["zdc_pct"] = xr.where(
             ds_out["n_valid_days"] > 0,
             100.0 * ds_out["zdc_days"] / ds_out["n_valid_days"],
@@ -631,27 +711,32 @@ def compute_seasonal_stats_for_box(
         )
 
     elif spatial_method == "city_mean":
-        # Spatial mean first, then crossing from the box-mean daily series.
         ds_mean = spatial_mean_temperature_precip(
             ds,
             lat_name=lat_name,
             lon_name=lon_name,
+            include_precipitation=include_precipitation,
         )
+
         ds_mean = ds_mean.assign_coords(
             season=ds["season"],
             season_year=ds["season_year"],
         )
 
-        ds_cross = compute_zero_degree_crossing(ds_mean)
+        ds_cross = compute_zero_degree_crossing(
+            ds_mean,
+            include_precipitation=include_precipitation,
+        )
+
         ds_out = aggregate_crossing_by_season(ds_cross)
 
     else:
         raise ValueError("spatial_method must be 'gridpoint_mean' or 'city_mean'.")
 
-    # Rename dimension season_year -> year for final output.
+    # Rename season_year to year for final output.
     ds_out = ds_out.rename({"season_year": "year"})
 
-    # Add city and box-size dimensions.
+    # Add city and box dimensions.
     ds_out = ds_out.expand_dims(
         city=[city_name],
         box_size_index=[box_size_index],
@@ -667,11 +752,10 @@ def combine_all_cities_and_boxes(
     years_list,
     seasons,
     spatial_method="gridpoint_mean",
+    include_precipitation=True,
 ):
     """
-    Loop over all cities and box sizes and combine the output into
-    one Dataset with dimensions:
-        (year, city, box_size_index, season)
+    Loop over all cities and boxes and combine output into one Dataset.
     """
     all_ds = []
 
@@ -683,6 +767,7 @@ def combine_all_cities_and_boxes(
             print(
                 f"Processing {city_name:10s} | box={box_name:6s} | "
                 f"delta={delta:.2f} | method={spatial_method} | "
+                f"include_precipitation={include_precipitation} | "
                 f"center=({lat0:.4f}, {lon0:.4f})"
             )
 
@@ -696,39 +781,44 @@ def combine_all_cities_and_boxes(
                 years_list=years_list,
                 seasons=seasons,
                 spatial_method=spatial_method,
+                include_precipitation=include_precipitation,
             )
+
             all_ds.append(ds_box)
 
     ds_out = xr.combine_by_coords(all_ds)
 
-    dim_order = [d for d in ["year", "city", "box_size_index", "season"] if d in ds_out.dims]
+    dim_order = [
+        d for d in ["year", "city", "box_size_index", "season"]
+        if d in ds_out.dims
+    ]
+
     ds_out = ds_out.transpose(*dim_order)
 
     return ds_out
 
 
+# ---------------------------------------------------------------------
+# 9) metadata and output
+# ---------------------------------------------------------------------
 def add_city_and_box_coordinates(ds_out, city_coords, box_size_deltas):
-    """
-    Add original and adjusted city center coordinates and numeric box deltas.
-
-    Added coordinates:
-      - city_lat(city)          : adjusted latitude used in extraction
-      - city_lon(city)          : adjusted longitude used in extraction
-      - city_orig_lat(city)     : original requested city latitude
-      - city_orig_lon(city)     : original requested city longitude
-      - box_size_delta(box_size_index)
-    """
+    """Add city coordinates and box-size coordinates to output Dataset."""
     city_names = ds_out["city"].values
     box_names = ds_out["box_size_index"].values
 
     city_lat = [city_coords[city]["lat"] for city in city_names]
     city_lon = [city_coords[city]["lon"] for city in city_names]
+
     city_orig_lat = [
-        city_coords[city].get("orig_lat", city_coords[city]["lat"]) for city in city_names
+        city_coords[city].get("orig_lat", city_coords[city]["lat"])
+        for city in city_names
     ]
+
     city_orig_lon = [
-        city_coords[city].get("orig_lon", city_coords[city]["lon"]) for city in city_names
+        city_coords[city].get("orig_lon", city_coords[city]["lon"])
+        for city in city_names
     ]
+
     box_delta = [box_size_deltas[box] for box in box_names]
 
     ds_out = ds_out.assign_coords(
@@ -742,40 +832,29 @@ def add_city_and_box_coordinates(ds_out, city_coords, box_size_deltas):
     ds_out["city_lat"].attrs = {
         "long_name": "Adjusted city center latitude used for extraction",
         "units": "degrees_north",
-        "description": (
-            "Latitude of the nearest valid grid point used as the city center "
-            "for extracting the city box."
-        ),
     }
 
     ds_out["city_lon"].attrs = {
         "long_name": "Adjusted city center longitude used for extraction",
         "units": "degrees_east",
-        "description": (
-            "Longitude of the nearest valid grid point used as the city center "
-            "for extracting the city box."
-        ),
     }
 
     ds_out["city_orig_lat"].attrs = {
         "long_name": "Original requested city latitude",
         "units": "degrees_north",
-        "description": "Original user-specified city-center latitude before snapping.",
     }
 
     ds_out["city_orig_lon"].attrs = {
         "long_name": "Original requested city longitude",
         "units": "degrees_east",
-        "description": "Original user-specified city-center longitude before snapping.",
     }
 
     ds_out["box_size_delta"].attrs = {
         "long_name": "Half-width of latitude-longitude box around city center",
         "units": "degrees",
         "description": (
-            "The selected box is [lat-delta, lat+delta] x [lon-delta, lon+delta]. "
-            "This coordinate stores the numeric delta corresponding to each "
-            "box_size_index."
+            "The selected box is [lat-delta, lat+delta] x "
+            "[lon-delta, lon+delta]."
         ),
     }
 
@@ -790,26 +869,31 @@ def add_output_metadata(
     box_size_deltas,
     snap_reference_year,
     snap_valid_fraction_threshold,
+    include_precipitation=True,
 ):
-    """
-    Add descriptive metadata to the output Dataset so the NetCDF file
-    is self-explanatory.
-    """
+    """Add descriptive metadata to output Dataset."""
+    event_description = get_event_description(include_precipitation)
+
+    if include_precipitation:
+        title = (
+            "Historical seasonal statistics of zero-degree crossing days "
+            "with precipitation"
+        )
+    else:
+        title = "Historical seasonal statistics of zero-degree crossing days"
+
     ds_out["zdc_days"].attrs = {
-        "long_name": "Seasonal number of thaw-precipitation zero-degree crossing days",
+        "long_name": "Seasonal number of zero-degree crossing days",
         "units": "days",
-        "description": (
-            "A day is counted if tn < 0 C, tx > 0 C, and tp > 0 "
-            "on the same day."
-        ),
+        "description": f"A day is counted if {event_description}.",
     }
 
     ds_out["zdc_pct"].attrs = {
-        "long_name": "Seasonal percentage of thaw-precipitation zero-degree crossing days",
+        "long_name": "Seasonal percentage of zero-degree crossing days",
         "units": "%",
         "description": (
-            "Percentage of valid days in each season that satisfy "
-            "tn < 0 C, tx > 0 C, and tp > 0."
+            f"Percentage of valid days in each season that satisfy "
+            f"{event_description}."
         ),
     }
 
@@ -817,8 +901,10 @@ def add_output_metadata(
         "long_name": "Seasonal number of valid days used in the calculation",
         "units": "days",
         "description": (
-            "Number of days with valid tn, tx, and tp values used when computing "
-            "zdc_days and zdc_pct."
+            "For gridpoint_mean, this is a box-level valid-day count: "
+            "a day is valid if at least one grid cell in the box has all "
+            "required variables. Required variables are tn and tx, plus tp "
+            "when include_precipitation=True."
         ),
     }
 
@@ -826,7 +912,7 @@ def add_output_metadata(
         "long_name": "Season-year",
         "description": (
             "For DJF, December is assigned to the following year. "
-            "For example, Dec 2003 + Jan-Feb 2004 is labeled as DJF 2004."
+            "For example, Dec 2003 + Jan-Feb 2004 is labeled DJF 2004."
         ),
     }
 
@@ -837,46 +923,41 @@ def add_output_metadata(
 
     ds_out["city"].attrs = {
         "long_name": "City name",
-        "description": "Name of city used to define the center of the spatial box.",
     }
 
     ds_out["box_size_index"].attrs = {
         "long_name": "Box size category around city center",
         "description": (
-            "Categorical label for the spatial box around the city center. "
-            "The corresponding numeric half-width in degrees is stored in "
-            "the box_size_delta coordinate."
+            "Categorical label for spatial box. Numeric half-width is stored "
+            "in box_size_delta."
         ),
     }
 
     ds_out.attrs = {
-        "title": "Historical seasonal statistics of thaw-precipitation zero-degree crossing days",
+        "title": title,
         "summary": (
-            "Seasonal statistics of days satisfying tn < 0 C, tx > 0 C, "
-            "and tp > 0 for selected cities and box sizes."
+            f"Seasonal statistics of days satisfying {event_description} "
+            "for selected cities and box sizes."
         ),
+        "event_definition": event_description,
+        "include_precipitation": int(include_precipitation),
         "dataset": dataset_name,
         "season_request": season_name,
         "spatial_method": spatial_method,
         "spatial_method_description": (
-            "gridpoint_mean: the event is computed at each grid cell, "
-            "seasonal statistics are computed per grid cell, and then averaged "
-            "across the box. "
-            "city_mean: daily tn, tx, and tp are first averaged across the box, "
+            "gridpoint_mean: event is computed at each grid cell, seasonal "
+            "statistics are computed per grid cell, and zdc_days is averaged "
+            "across the box. n_valid_days is a box-level valid-day count. "
+            "city_mean: daily variables are first averaged across the box, "
             "then the event is computed from the box-mean daily series."
         ),
         "box_definition": (
             "For each city and box size, the selected spatial domain is "
-            "[lat-delta, lat+delta] x [lon-delta, lon+delta], where lat/lon "
-            "are the adjusted city center coordinates and delta is the half-width "
-            "stored in box_size_delta."
+            "[lat-delta, lat+delta] x [lon-delta, lon+delta]."
         ),
         "city_center_adjustment": (
-            "Original user-specified city centers were snapped to the nearest "
-            "valid grid cell using a reference year to avoid ocean-only central "
-            "grid points with missing data. Original coordinates are stored in "
-            "city_orig_lat and city_orig_lon. Adjusted coordinates used in the "
-            "extraction are stored in city_lat and city_lon."
+            "Original city centers were snapped to nearest valid grid point "
+            "using a reference year."
         ),
         "snap_reference_year": int(snap_reference_year),
         "snap_valid_fraction_threshold": float(snap_valid_fraction_threshold),
@@ -896,21 +977,19 @@ def write_outputs(
     season_name,
     spatial_method,
     years_list,
+    include_precipitation=True,
     write2csv=False,
     write2nc=False,
 ):
-    """
-    Write output Dataset to NetCDF and/or CSV.
-    """
+    """Write output Dataset to NetCDF and/or CSV."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    year_start = min(years_list)
-    year_end = max(years_list)
-
-    file_stub = (
-        f"scandinavian_city_zero_degree_crossing_with_precipitation_stats_"
-        f"{dataset_name}_{season_name}_{spatial_method}_"
-        f"{year_start}-{year_end}"
+    file_stub = get_output_file_stub(
+        dataset_name=dataset_name,
+        season_name=season_name,
+        spatial_method=spatial_method,
+        years_list=years_list,
+        include_precipitation=include_precipitation,
     )
 
     if write2nc:
@@ -926,7 +1005,7 @@ def write_outputs(
 
 
 # ---------------------------------------------------------------------
-# 4) main script
+# 10) main script
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
 
@@ -941,6 +1020,7 @@ if __name__ == "__main__":
         city_coords=CITY_COORDS,
         reference_year=snap_reference_year,
         valid_fraction_threshold=snap_valid_fraction_threshold,
+        include_precipitation=include_precipitation,
     )
 
     ds_out = combine_all_cities_and_boxes(
@@ -950,6 +1030,7 @@ if __name__ == "__main__":
         years_list=years_list,
         seasons=seasons,
         spatial_method=spatial_method,
+        include_precipitation=include_precipitation,
     )
 
     ds_out = add_city_and_box_coordinates(
@@ -966,6 +1047,7 @@ if __name__ == "__main__":
         box_size_deltas=BOX_SIZE_DELTAS,
         snap_reference_year=snap_reference_year,
         snap_valid_fraction_threshold=snap_valid_fraction_threshold,
+        include_precipitation=include_precipitation,
     )
 
     write_outputs(
@@ -975,6 +1057,7 @@ if __name__ == "__main__":
         season_name=season,
         spatial_method=spatial_method,
         years_list=years_list,
+        include_precipitation=include_precipitation,
         write2csv=write2csv,
         write2nc=write2nc,
     )
