@@ -451,6 +451,7 @@ def open_tn_tx_tp_for_box(
             lon_name=lon_name,
         )
 
+        """
         ds_tx = subset_latlon(
             ds_tx,
             lat0=lat0,
@@ -461,6 +462,21 @@ def open_tn_tx_tp_for_box(
         )
 
         # Force tx coordinates to match tn exactly.
+        ds_tx = force_same_latlon_as_reference(
+            ds=ds_tx,
+            ds_ref=ds_tn,
+            lat_name=lat_name,
+            lon_name=lon_name,
+        )
+        """
+        ds_tx = ds_tx.sel(
+            {
+                lat_name: ds_tn[lat_name],
+                lon_name: ds_tn[lon_name],
+            },
+            method="nearest",
+        )
+        
         ds_tx = force_same_latlon_as_reference(
             ds=ds_tx,
             ds_ref=ds_tn,
@@ -480,6 +496,7 @@ def open_tn_tx_tp_for_box(
                 raise FileNotFoundError(f"Missing file: {tp_path}")
 
             with xr.open_dataset(tp_path) as ds_tp:
+                """
                 ds_tp = subset_latlon(
                     ds_tp,
                     lat0=lat0,
@@ -490,6 +507,21 @@ def open_tn_tx_tp_for_box(
                 )
 
                 # Force tp coordinates to match tn exactly.
+                ds_tp = force_same_latlon_as_reference(
+                    ds=ds_tp,
+                    ds_ref=ds_tn,
+                    lat_name=lat_name,
+                    lon_name=lon_name,
+                )
+                """
+                ds_tp = ds_tp.sel(
+                    {
+                        lat_name: ds_tn[lat_name],
+                        lon_name: ds_tn[lon_name],
+                    },
+                    method="nearest",
+                )
+
                 ds_tp = force_same_latlon_as_reference(
                     ds=ds_tp,
                     ds_ref=ds_tn,
