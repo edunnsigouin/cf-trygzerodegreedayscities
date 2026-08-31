@@ -297,8 +297,12 @@ def add_map_legend(ax):
         markersize=np.sqrt(city_marker_size),
         label="Major cities insured by Tryg",
     )
+    #contour_label = (
+    #    f"{tmean_contour_level:g} degree climatology "
+    #    f"{reference_years[0]}-{reference_years[-1]}"
+    #)
     contour_label = (
-        f"{tmean_contour_level:g} degree climatology "
+        f"{tmean_contour_level:g}$^\\circ$C climatology "
         f"{reference_years[0]}-{reference_years[-1]}"
     )
     contour_handle = Line2D(
