@@ -51,7 +51,7 @@ input_dir = config.dirs["eobs_processed"]
 
 output_dir = config.dirs["fig"] + "oppgave_26-04-27/"
 
-savefig = False
+savefig = True
 
 showfig = True
 

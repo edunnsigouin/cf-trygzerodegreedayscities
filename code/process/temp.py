@@ -25,7 +25,7 @@ from trygzerodegreedayscities import config
 dataset = "eobs"                 # "eobs" or "era5"
 years = [1951, 2024]             # inclusive season-year range
 season = "djf"                   # "djf", "mam", "jja", "son", or "all"
-include_precipitation = False
+include_precipitation = True
 
 write2nc = True
 write2csv = False                 # full-grid CSV output can be extremely large
