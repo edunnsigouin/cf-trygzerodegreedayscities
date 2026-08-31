@@ -1,445 +1,340 @@
 """Plot the linear trend in gridded zero-degree crossing statistics.
-
 The input is the full-grid NetCDF produced by the grid-point statistics script.
-
 A linear trend is fitted independently at every latitude-longitude grid point
-
 over all available years in the selected period.
-
 Major Scandinavian cities are overlaid as colored markers.
-
 """
-
 import os
-
 from pathlib import Path
-
 import cartopy.crs as ccrs
-
 import cartopy.feature as cfeature
-
 import matplotlib.pyplot as plt
-
 import numpy as np
-
 import xarray as xr
-
 from matplotlib.colors import TwoSlopeNorm
-
+from matplotlib.lines import Line2D
 from trygzerodegreedayscities import config
 
-
 # -----------------------------------------------------------------------------
-
 # User settings
 
 # -----------------------------------------------------------------------------
-
 dataset = "eobs"
-
 plot_with_precipitation = False
-
 season = "djf"                    # "djf", "mam", "jja", or "son"
-
 statistic = "zdc_days"             # "zdc_pct", "zdc_days", or "n_valid_days"
-
 file_years = [1951, 2024]
-
 file_season_tag = "djf"
-
 input_dir = config.dirs["eobs_processed"]
-
 output_dir = config.dirs["fig"] + "oppgave_26-04-27/"
-
 savefig = False
-
 showfig = True
-
 fig_dpi = 300
-
 figsize = (8.2, 9.0)
-
-map_extent = [5.5, 24.0, 54.0, 71.5]
-
+map_extent = [4.0, 26.0, 54.0, 71.5]
 central_longitude = 15.0
-
 central_latitude = 62.0
-
 standard_parallels = (56.0, 68.0)
-
 cmap = "RdBu_r"
-
 city_color = "yellow"
-
 label_cities = False
-
 city_marker_size = 38
-
 city_label_size = 8.5
-
 city_label_offset = (0.18, 0.08)
-
 min_valid_years = 2
-
+reference_years = [1951, 2000]
+tmean_variable = "tmean"
+tmean_contour_level = -1.5
+tmean_contour_color = "green"
+tmean_contour_linewidth = 3.0
+legend_location = "upper left"
+legend_fontsize = 10
+legend_framealpha = 0.9
 color_limit_percentile = 98
-colorbar_limits = None            # e.g. (-2.0, 2.0); None uses robust symmetric limits
-colorbar_label_size = 10
-colorbar_ticklabel_size = 9
+colorbar_limits = (-3,3)           # e.g. (-2.0, 2.0); None uses robust symmetric limits
+colorbar_label_size = 12
+colorbar_ticklabel_size = 12
 colorbar_tick_length = 3
-colorbar_width = 0.025            # fraction of figure width
+colorbar_width = 0.04            # fraction of figure width
 colorbar_pad = 0.018              # gap between map and colorbar
-
 CITY_COORDS = {
-
     "Oslo": (59.9139, 10.7522),
-
     "Bergen": (60.3913, 5.3221),
-
     "Trondheim": (63.4305, 10.3951),
-
     "Copenhagen": (55.6761, 12.5683),
-
     "Aarhus": (56.1629, 10.2039),
-
     "Odense": (55.4038, 10.4024),
-
     "Stockholm": (59.3293, 18.0686),
-
     "Gothenburg": (57.7089, 11.9746),
-
     "Malmo": (55.6050, 13.0038),
-
     "Tromso": (69.6492, 18.9553),
-
 }
 
-
 # -----------------------------------------------------------------------------
-
 # Filenames and labels
 
 # -----------------------------------------------------------------------------
 
+
 def get_precip_tag(with_precipitation):
-
     """Return the precipitation tag used by the statistics script."""
-
     return "with_precipitation" if with_precipitation else "without_precipitation"
 
 
 def build_input_file(dataset_name, file_season, years, with_precipitation):
-
     """Build the gridded-statistics NetCDF filename."""
-
     precip_tag = get_precip_tag(with_precipitation)
-
     return (
-
         f"xy_zero_degree_crossing_{precip_tag}_stats_grid_"
-
         f"{dataset_name}_{file_season}_{years[0]}-{years[1]}.nc"
-
     )
 
 
 def build_figure_name(
-
     dataset_name, season_name, statistic_name, years, with_precipitation
-
 ):
-
     """Build the trend-map figure filename."""
-
     precip_tag = get_precip_tag(with_precipitation)
-
     return (
-
         f"map_linear_trend_{statistic_name}_{precip_tag}_"
-
         f"{dataset_name}_{season_name}_{years[0]}-{years[1]}.png"
-
     )
 
 
 def get_statistic_label(statistic_name):
-
     """Return map and colorbar labels for the selected statistic."""
-
     labels = {
-
         "zdc_pct": (
-
             "Zero-degree crossing percentage",
-
             "Trend (%-points decade$^{-1}$)",
-
         ),
-
         "zdc_days": (
-
             "Zero-degree crossing days",
-
             "Trend (days decade$^{-1}$)",
-
         ),
-
         "n_valid_days": (
-
             "Number of valid days",
-
             "Trend (days decade$^{-1}$)",
-
         ),
-
     }
-
     if statistic_name not in labels:
-
         raise ValueError(
-
             f"statistic must be one of {list(labels)}; got {statistic_name!r}"
-
         )
-
     return labels[statistic_name]
-
-
 input_file = build_input_file(
-
     dataset_name=dataset,
-
     file_season=file_season_tag,
-
     years=file_years,
-
     with_precipitation=plot_with_precipitation,
-
 )
-
 fig_name = build_figure_name(
-
     dataset_name=dataset,
-
     season_name=season,
-
     statistic_name=statistic,
-
     years=file_years,
-
     with_precipitation=plot_with_precipitation,
-
 )
-
 
 # -----------------------------------------------------------------------------
-
 # Data handling
 
 # -----------------------------------------------------------------------------
 
+
 def open_statistics(path_nc):
-
     """Open the full-grid statistics dataset."""
-
     if not os.path.exists(path_nc):
-
         raise FileNotFoundError(f"Statistics file not found: {path_nc}")
-
     return xr.open_dataset(path_nc, decode_timedelta=False)
 
 
 def select_statistic(ds, statistic_name, season_name):
-
     """Select one statistic and season while retaining year, latitude, longitude."""
-
     if statistic_name not in ds:
-
         raise ValueError(
-
             f"Variable {statistic_name!r} not found. Available variables: "
-
             f"{list(ds.data_vars)}"
-
         )
-
     required_dims = {"year", "latitude", "longitude"}
-
     missing_dims = required_dims - set(ds[statistic_name].dims)
-
     if missing_dims:
-
         raise ValueError(
-
             f"{statistic_name!r} is missing dimensions {sorted(missing_dims)}. "
-
             f"Found dimensions: {ds[statistic_name].dims}"
-
         )
-
     if "season" not in ds.coords:
-
         raise ValueError("Input dataset does not contain a 'season' coordinate.")
-
     available_seasons = [str(value) for value in ds["season"].values]
-
     if season_name not in available_seasons:
-
         raise ValueError(
-
             f"Season {season_name!r} not found. Available seasons: {available_seasons}"
-
         )
-
     return ds[statistic_name].sel(season=season_name)
 
 
+def calculate_tmean_climatology(ds, variable, season_name, reference_period):
+    """Return mean seasonal temperature over the selected reference period."""
+    if variable not in ds:
+        raise ValueError(
+            f"Variable {variable!r} not found. Available variables: {list(ds.data_vars)}"
+        )
+    start_year, end_year = map(int, reference_period)
+    tmean = ds[variable].sel(season=season_name, year=slice(start_year, end_year))
+    if tmean.sizes.get("year", 0) == 0:
+        raise ValueError(
+            f"No years found for reference period {start_year}-{end_year}."
+        )
+    return tmean.mean("year", skipna=True)
+
+
 def calculate_linear_trend(data, min_years=2):
-
     """Fit a least-squares trend along year at every grid point."""
-
     valid_years = data.count("year")
-
     centered_year = data["year"].astype(float) - float(data["year"].mean())
-
     fit_data = data.assign_coords(year=centered_year)
-
     coefficients = fit_data.polyfit(dim="year", deg=1, skipna=True)[
-
         "polyfit_coefficients"
-
     ]
-
     trend_per_decade = 10.0 * coefficients.sel(degree=1)
-
     return trend_per_decade.where(valid_years >= min_years)
 
 
 def get_symmetric_limits(trend):
-
     """Return robust symmetric color limits centered on zero."""
-
     finite = np.asarray(trend.values)
-
     finite = finite[np.isfinite(finite)]
-
     if finite.size == 0:
-
         raise ValueError("No finite trend values are available to plot.")
-
     limit = float(np.nanpercentile(np.abs(finite), color_limit_percentile))
-
     if not np.isfinite(limit) or np.isclose(limit, 0.0):
-
         limit = float(np.nanmax(np.abs(finite)))
-
     if not np.isfinite(limit) or np.isclose(limit, 0.0):
-
         limit = 1.0
-
     return -limit, limit
 
-
 # -----------------------------------------------------------------------------
-
 # Plotting
 
 # -----------------------------------------------------------------------------
 
+
 def get_map_projection():
-
     """Return the Lambert Conformal projection used for the map."""
-
     return ccrs.LambertConformal(
-
         central_longitude=central_longitude,
-
         central_latitude=central_latitude,
-
         standard_parallels=standard_parallels,
-
     )
 
 
 def add_city_markers(ax):
-
     """Overlay major Scandinavian cities."""
-
     dx, dy = city_label_offset
-
     for name, (lat, lon) in CITY_COORDS.items():
-
         ax.scatter(
-
             lon,
-
             lat,
-
             s=city_marker_size,
-
             c=city_color,
-
             edgecolors="black",
-
             linewidths=0.6,
-
             zorder=6,
-
             transform=ccrs.PlateCarree(),
-
         )
-
         if label_cities:
-
             ax.text(
-
                 lon + dx,
-
                 lat + dy,
-
                 name,
-
                 color=city_color,
-
                 fontsize=city_label_size,
-
                 fontweight="semibold",
-
                 ha="left",
-
                 va="bottom",
-
                 zorder=7,
-
                 transform=ccrs.PlateCarree(),
-
                 path_effects=[],
-
             )
+
+
+def add_tmean_zero_contour(ax, tmean_climatology):
+    """Overlay the climatological mean-temperature zero contour."""
+    values = np.asarray(tmean_climatology.values)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        raise ValueError("Tmean climatology contains no finite values.")
+    tmin = float(finite.min())
+    tmax = float(finite.max())
+    print(f"Tmean climatology range: {tmin:.2f} to {tmax:.2f} °C")
+    if not tmin <= tmean_contour_level <= tmax:
+        print(
+            f"Warning: {tmean_contour_level:.1f} °C is outside the climatology "
+            f"range, so no contour can be drawn."
+        )
+        return
+    ax.contour(
+        tmean_climatology["longitude"],
+        tmean_climatology["latitude"],
+        tmean_climatology,
+        levels=[tmean_contour_level],
+        colors=tmean_contour_color,
+        linewidths=tmean_contour_linewidth,
+        linestyles="solid",
+        transform=ccrs.PlateCarree(),
+        zorder=5,
+    )
+
+
+def add_map_legend(ax):
+    """Add city and climatology legend entries."""
+    city_handle = Line2D(
+        [0], [0],
+        marker="o",
+        linestyle="none",
+        markerfacecolor=city_color,
+        markeredgecolor="black",
+        markersize=np.sqrt(city_marker_size),
+        label="Major cities insured by Tryg",
+    )
+    contour_label = (
+        f"{tmean_contour_level:g} degree climatology "
+        f"{reference_years[0]}-{reference_years[-1]}"
+    )
+    contour_handle = Line2D(
+        [0], [0],
+        color=tmean_contour_color,
+        linewidth=tmean_contour_linewidth,
+        linestyle="solid",
+        label=contour_label,
+    )
+    ax.legend(
+        handles=[city_handle, contour_handle],
+        loc=legend_location,
+        fontsize=legend_fontsize,
+        frameon=False,
+    )
 
 
 def style_map(ax):
     """Add publication-style geographic features."""
     ax.set_extent(map_extent, crs=ccrs.PlateCarree())
     ax.add_feature(cfeature.COASTLINE, linewidth=1.0, edgecolor="0.0", zorder=4)
-    ax.add_feature(cfeature.BORDERS, linewidth=1.0, edgecolor="0.35", zorder=4)
+    #ax.add_feature(cfeature.BORDERS, linewidth=1.0, edgecolor="0.35", zorder=4)
 
 
-def plot_trend_map(trend, statistic_name, season_name, years):
+def plot_trend_map(trend, tmean_climatology, statistic_name, season_name, years):
     """Plot the gridded linear trend using Lambert Conformal projection."""
     _, colorbar_label = get_statistic_label(statistic_name)
-
     if colorbar_limits is None:
         vmin, vmax = get_symmetric_limits(trend)
     else:
         vmin, vmax = map(float, colorbar_limits)
         if not vmin < 0 < vmax:
             raise ValueError("colorbar_limits must span zero, e.g. (-2.0, 2.0).")
-
     norm = TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
-
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(1, 1, 1, projection=get_map_projection())
-
     mesh = ax.pcolormesh(
         trend["longitude"],
         trend["latitude"],
@@ -451,10 +346,10 @@ def plot_trend_map(trend, statistic_name, season_name, years):
         rasterized=True,
         zorder=1,
     )
-
     style_map(ax)
+    add_tmean_zero_contour(ax, tmean_climatology)
     add_city_markers(ax)
-
+    add_map_legend(ax)
     fig.canvas.draw()
     map_box = ax.get_position()
     cax = fig.add_axes(
@@ -465,74 +360,54 @@ def plot_trend_map(trend, statistic_name, season_name, years):
             map_box.height,
         ]
     )
-
     colorbar = fig.colorbar(mesh, cax=cax, orientation="vertical", extend="both")
     colorbar.set_label(colorbar_label, fontsize=colorbar_label_size)
     colorbar.ax.tick_params(
         labelsize=colorbar_ticklabel_size,
         length=colorbar_tick_length,
     )
-
     return fig
 
 
 def save_figure(fig, directory, filename, dpi):
-
     """Save the figure."""
-
     Path(directory).mkdir(parents=True, exist_ok=True)
-
     path = os.path.join(directory, filename)
-
     fig.savefig(path, dpi=dpi, bbox_inches="tight", facecolor="white")
-
     print(f"Wrote figure: {path}")
 
-
 # -----------------------------------------------------------------------------
-
 # Main
 
 # -----------------------------------------------------------------------------
 
+
 if __name__ == "__main__":
-
     path_nc = os.path.join(input_dir, input_file)
-
     print(f"Reading: {path_nc}")
-
     print(f"Statistic: {statistic}")
-
     print(f"Season: {season}")
-
+    print(f"Tmean reference period: {reference_years[0]}-{reference_years[1]}")
     print(f"Figure name: {fig_name}")
-
     with open_statistics(path_nc) as ds:
-
         data = select_statistic(ds, statistic, season)
-
         trend = calculate_linear_trend(data, min_valid_years).load()
-
+        tmean_climatology = calculate_tmean_climatology(
+            ds,
+            variable=tmean_variable,
+            season_name=season,
+            reference_period=reference_years,
+        ).load()
     fig = plot_trend_map(
-
         trend=trend,
-
+        tmean_climatology=tmean_climatology,
         statistic_name=statistic,
-
         season_name=season,
-
         years=file_years,
-
     )
-
     if savefig:
-
         save_figure(fig, output_dir, fig_name, fig_dpi)
-
     if showfig:
-
         plt.show()
-
     else:
-
         plt.close(fig)
