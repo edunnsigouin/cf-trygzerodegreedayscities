@@ -61,7 +61,7 @@ input_dir = config.dirs["eobs_processed"]
 output_dir = config.dirs["fig"] + "oppgave_26-04-27/"
 
 # Figure options
-savefig = True
+savefig = False
 fig_dpi = 200
 figsize = (14, 6)
 

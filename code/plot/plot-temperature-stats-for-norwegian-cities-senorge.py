@@ -24,7 +24,7 @@ year       = 2025
 variable   = 'tg'
 path_in    = config.dirs['senorge_raw']
 path_out   = config.dirs['fig']
-write2file = True
+write2file = False
 # --------------------------------------------------
 
 def get_city_bboxes():

@@ -1,0 +1,437 @@
+"""Create seasonal zero-degree crossing statistics at every latitude-longitude grid point.
+
+The event is either:
+    tn < 0 and tx > 0
+or, when include_precipitation=True:
+    tn < 0 and tx > 0 and tp > 0
+
+Statistics are retained independently for every grid point. No city selection,
+box averaging, or spatial averaging is performed.
+"""
+
+import os
+from pathlib import Path
+
+import numpy as np
+import xarray as xr
+
+from trygzerodegreedayscities import config
+
+
+# -----------------------------------------------------------------------------
+# User settings
+# -----------------------------------------------------------------------------
+
+dataset = "eobs"                 # "eobs" or "era5"
+years = [1951, 2024]             # inclusive season-year range
+season = "djf"                   # "djf", "mam", "jja", "son", or "all"
+include_precipitation = False
+
+write2nc = True
+write2csv = False                 # full-grid CSV output can be extremely large
+output_dir = config.dirs["eobs_processed"]
+
+
+# -----------------------------------------------------------------------------
+# Dataset configuration
+# -----------------------------------------------------------------------------
+
+DATASET_CONFIG = {
+    "eobs": {
+        "tn_dir": os.path.join(config.dirs["eobs_raw"], "tn"),
+        "tx_dir": os.path.join(config.dirs["eobs_raw"], "tx"),
+        "tp_dir": os.path.join(config.dirs["eobs_raw"], "tp"),
+        "tn_var": "tn",
+        "tx_var": "tx",
+        "tp_var": "tp",
+        "lat_name": "latitude",
+        "lon_name": "longitude",
+        "file_template_tn": "tn_0.1x0.1_{year}.nc",
+        "file_template_tx": "tx_0.1x0.1_{year}.nc",
+        "file_template_tp": "tp_0.1x0.1_{year}.nc",
+    },
+    "era5": {
+        "tn_dir": os.path.join(config.dirs.get("era5_raw", ""), "tn"),
+        "tx_dir": os.path.join(config.dirs.get("era5_raw", ""), "tx"),
+        "tp_dir": os.path.join(config.dirs.get("era5_raw", ""), "tp"),
+        "tn_var": "tn",
+        "tx_var": "tx",
+        "tp_var": "tp",
+        "lat_name": "latitude",
+        "lon_name": "longitude",
+        "file_template_tn": "tn_0.25x0.25_{year}.nc",
+        "file_template_tx": "tx_0.25x0.25_{year}.nc",
+        "file_template_tp": "tp_0.25x0.25_{year}.nc",
+    },
+}
+
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+
+def get_year_list(years_in):
+    """Return the inclusive list of requested season-years."""
+    if len(years_in) != 2:
+        raise ValueError("years must be given as [start_year, end_year].")
+
+    year_start, year_end = map(int, years_in)
+    if year_end < year_start:
+        raise ValueError("end_year must be >= start_year.")
+
+    return list(range(year_start, year_end + 1))
+
+
+def get_season_list(season_in):
+    """Return normalized requested seasons."""
+    valid = ["djf", "mam", "jja", "son"]
+    season_in = season_in.lower()
+
+    if season_in == "all":
+        return valid
+    if season_in not in valid:
+        raise ValueError(f"season must be one of {valid + ['all']}")
+
+    return [season_in]
+
+
+def build_file_path(dataset_name, variable, year):
+    """Build the path to one annual tn, tx, or tp file."""
+    if dataset_name not in DATASET_CONFIG:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+    if variable not in {"tn", "tx", "tp"}:
+        raise ValueError("variable must be 'tn', 'tx', or 'tp'.")
+
+    cfg = DATASET_CONFIG[dataset_name]
+    template = cfg[f"file_template_{variable}"]
+    return os.path.join(cfg[f"{variable}_dir"], template.format(year=year))
+
+
+def get_output_file_stub(dataset_name, season_name, years_list, include_precipitation):
+    """Build the output filename stem."""
+    precip_tag = "with_precipitation" if include_precipitation else "without_precipitation"
+    return (
+        f"xy_zero_degree_crossing_{precip_tag}_stats_grid_"
+        f"{dataset_name}_{season_name}_{min(years_list)}-{max(years_list)}"
+    )
+
+
+def get_event_description(include_precipitation):
+    """Return a readable event definition."""
+    if include_precipitation:
+        return "tn < 0 C, tx > 0 C, and tp > 0"
+    return "tn < 0 C and tx > 0 C"
+
+
+def check_file(path):
+    """Raise a clear error when an input file is missing."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Missing file: {path}")
+
+
+def force_same_latlon_as_reference(data, reference, lat_name, lon_name):
+    """Use the reference latitude-longitude coordinates exactly."""
+    if data.sizes[lat_name] != reference.sizes[lat_name]:
+        raise ValueError(f"Latitude size differs between input variables: {data.sizes[lat_name]} != "
+                         f"{reference.sizes[lat_name]}")
+    if data.sizes[lon_name] != reference.sizes[lon_name]:
+        raise ValueError(f"Longitude size differs between input variables: {data.sizes[lon_name]} != "
+                         f"{reference.sizes[lon_name]}")
+
+    return data.assign_coords(
+        {lat_name: reference[lat_name].values, lon_name: reference[lon_name].values}
+    )
+
+
+def select_months(data, months):
+    """Select calendar months from one annual DataArray."""
+    return data.where(data["time"].dt.month.isin(months), drop=True)
+
+
+# -----------------------------------------------------------------------------
+# Reading and seasonal assembly
+# -----------------------------------------------------------------------------
+
+def open_annual_variables(dataset_name, year, months, include_precipitation=True):
+    """Open selected months from one calendar year on the native grid."""
+    cfg = DATASET_CONFIG[dataset_name]
+    lat_name = cfg["lat_name"]
+    lon_name = cfg["lon_name"]
+
+    paths = {variable: build_file_path(dataset_name, variable, year) for variable in ["tn", "tx"]}
+    if include_precipitation:
+        paths["tp"] = build_file_path(dataset_name, "tp", year)
+
+    for path in paths.values():
+        check_file(path)
+
+    datasets = {name: xr.open_dataset(path) for name, path in paths.items()}
+    try:
+        tn = select_months(datasets["tn"][cfg["tn_var"]], months)
+        tx = select_months(datasets["tx"][cfg["tx_var"]], months).sel(
+            {lat_name: tn[lat_name], lon_name: tn[lon_name]}, method="nearest"
+        )
+        tx = force_same_latlon_as_reference(tx, tn, lat_name, lon_name)
+
+        data_vars = {"tn": tn, "tx": tx}
+        if include_precipitation:
+            tp = select_months(datasets["tp"][cfg["tp_var"]], months).sel(
+                {lat_name: tn[lat_name], lon_name: tn[lon_name]}, method="nearest"
+            )
+            data_vars["tp"] = force_same_latlon_as_reference(tp, tn, lat_name, lon_name)
+
+        return xr.Dataset(data_vars).load()
+    finally:
+        for ds in datasets.values():
+            ds.close()
+
+
+def build_season_year_data(dataset_name, year, seasons, include_precipitation=True):
+    """Read only the calendar months needed for one requested season-year."""
+    current_months = set()
+    season_months = {
+        "djf": [1, 2],
+        "mam": [3, 4, 5],
+        "jja": [6, 7, 8],
+        "son": [9, 10, 11],
+    }
+    for season_name in seasons:
+        current_months.update(season_months[season_name])
+
+    ds_current = open_annual_variables(
+        dataset_name,
+        year,
+        months=sorted(current_months),
+        include_precipitation=include_precipitation,
+    )
+    ds_parts = [ds_current]
+
+    if "djf" in seasons:
+        ds_previous = open_annual_variables(
+            dataset_name,
+            year - 1,
+            months=[12],
+            include_precipitation=include_precipitation,
+        )
+        ds_parts.insert(0, ds_previous)
+
+    return xr.concat(ds_parts, dim="time").sortby("time")
+
+
+# -----------------------------------------------------------------------------
+# Event and seasonal statistics
+# -----------------------------------------------------------------------------
+
+def assign_season_and_season_year(ds):
+    """Assign meteorological season and season-year; December belongs to next DJF."""
+    month = ds["time"].dt.month
+    year = ds["time"].dt.year
+    season_coord = xr.where(
+        month.isin([12, 1, 2]),
+        "djf",
+        xr.where(month.isin([3, 4, 5]), "mam", xr.where(month.isin([6, 7, 8]), "jja", "son")),
+    )
+    season_year = xr.where(month == 12, year + 1, year)
+
+    return ds.assign_coords(
+        season=("time", season_coord.data),
+        season_year=("time", season_year.data),
+    )
+
+
+def compute_zero_degree_crossing(ds, include_precipitation=True):
+    """Compute daily event flags and the valid-data mask at every grid point."""
+    valid = np.isfinite(ds["tn"]) & np.isfinite(ds["tx"])
+    crossing = (ds["tn"] < 0.0) & (ds["tx"] > 0.0)
+
+    if include_precipitation:
+        valid = valid & np.isfinite(ds["tp"])
+        crossing = crossing & (ds["tp"] > 0.0)
+
+    crossing = crossing & valid
+    return xr.Dataset(
+        {
+            "crossing": crossing.astype(np.int16),
+            "valid": valid.astype(np.int16),
+        }
+    )
+
+
+def aggregate_crossing_by_season(ds_cross, seasons):
+    """Aggregate daily event flags by season at every grid point."""
+    seasonal_stats = []
+    for season_name in seasons:
+        ds_season = ds_cross.where(ds_cross["season"] == season_name, drop=True)
+        crossing_days = ds_season["crossing"].sum("time").astype(np.int16)
+        valid_days = ds_season["valid"].sum("time").astype(np.int16)
+        crossing_pct = xr.where(
+            valid_days > 0, 100.0 * crossing_days / valid_days, np.nan
+        ).astype(np.float32)
+
+        seasonal_stats.append(
+            xr.Dataset(
+                {
+                    "zdc_days": crossing_days,
+                    "zdc_pct": crossing_pct,
+                    "n_valid_days": valid_days,
+                }
+            ).expand_dims(season=[season_name])
+        )
+
+    return xr.concat(seasonal_stats, dim="season")
+
+
+def compute_seasonal_stats_for_year(
+    dataset_name, year, seasons, include_precipitation=True
+):
+    """Compute all requested seasonal statistics for one season-year and every grid point."""
+    print(f"Processing season-year {year} | seasons={','.join(seasons)} | "
+          f"include_precipitation={include_precipitation}")
+
+    ds = build_season_year_data(
+        dataset_name=dataset_name,
+        year=year,
+        seasons=seasons,
+        include_precipitation=include_precipitation,
+    )
+    ds = assign_season_and_season_year(ds)
+    ds = ds.where(ds["season"].isin(seasons), drop=True)
+    ds = ds.where(ds["season_year"] == year, drop=True)
+
+    ds_cross = compute_zero_degree_crossing(ds, include_precipitation)
+    ds_out = aggregate_crossing_by_season(ds_cross, seasons).expand_dims(year=[year])
+    return ds_out.load()
+
+
+def compute_all_gridpoint_stats(
+    dataset_name, years_list, seasons, include_precipitation=True
+):
+    """Compute requested statistics for every season-year and native grid point."""
+    yearly_stats = [
+        compute_seasonal_stats_for_year(
+            dataset_name=dataset_name,
+            year=year,
+            seasons=seasons,
+            include_precipitation=include_precipitation,
+        )
+        for year in years_list
+    ]
+
+    ds_out = xr.concat(yearly_stats, dim="year").sortby("year")
+    cfg = DATASET_CONFIG[dataset_name]
+    dim_order = ["year", "season", cfg["lat_name"], cfg["lon_name"]]
+    return ds_out.transpose(*[dim for dim in dim_order if dim in ds_out.dims])
+
+
+# -----------------------------------------------------------------------------
+# Metadata and output
+# -----------------------------------------------------------------------------
+
+def add_output_metadata(ds_out, dataset_name, season_name, include_precipitation=True):
+    """Add metadata describing the grid-point statistics."""
+    event_description = get_event_description(include_precipitation)
+    precip_text = " with precipitation" if include_precipitation else ""
+
+    ds_out["zdc_days"].attrs = {
+        "long_name": f"Seasonal number of zero-degree crossing days{precip_text}",
+        "units": "days",
+        "description": f"At each grid point, a day is counted if {event_description}.",
+    }
+    ds_out["zdc_pct"].attrs = {
+        "long_name": f"Seasonal percentage of zero-degree crossing days{precip_text}",
+        "units": "%",
+        "description": (
+            "At each grid point, percentage of valid days in the season satisfying "
+            f"{event_description}."
+        ),
+    }
+    ds_out["n_valid_days"].attrs = {
+        "long_name": "Seasonal number of valid days at each grid point",
+        "units": "days",
+        "description": (
+            "A day is valid when tn and tx are finite, and tp is also finite when "
+            "include_precipitation=True."
+        ),
+    }
+    ds_out["year"].attrs = {
+        "long_name": "Season-year",
+        "description": "For DJF, December is assigned to the following year.",
+    }
+    ds_out["season"].attrs = {
+        "long_name": "Meteorological season",
+        "description": "One of djf, mam, jja, son.",
+    }
+    ds_out.attrs = {
+        "title": f"Historical seasonal zero-degree crossing statistics{precip_text} by grid point",
+        "summary": (
+            f"Seasonal statistics of days satisfying {event_description}, calculated independently "
+            "at every native latitude-longitude grid point. No spatial averaging is applied."
+        ),
+        "event_definition": event_description,
+        "include_precipitation": int(include_precipitation),
+        "dataset": dataset_name,
+        "season_request": season_name,
+        "spatial_method": "native_gridpoint",
+        "Conventions": "CF-1.8",
+    }
+    return ds_out
+
+
+def write_outputs(
+    ds_out,
+    output_dir,
+    dataset_name,
+    season_name,
+    years_list,
+    include_precipitation=True,
+    write2csv=False,
+    write2nc=False,
+):
+    """Write the full-grid statistics to NetCDF and optionally CSV."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    file_stub = get_output_file_stub(
+        dataset_name, season_name, years_list, include_precipitation
+    )
+
+    if write2nc:
+        nc_path = os.path.join(output_dir, f"{file_stub}.nc")
+        ds_out.to_netcdf(nc_path)
+        print(f"Wrote NetCDF: {nc_path}")
+
+    if write2csv:
+        csv_path = os.path.join(output_dir, f"{file_stub}.csv")
+        print("Warning: full-grid CSV output may contain tens of millions of rows.")
+        ds_out.to_dataframe().reset_index().to_csv(csv_path, index=False)
+        print(f"Wrote CSV: {csv_path}")
+
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    years_list = get_year_list(years)
+    seasons = get_season_list(season)
+
+    ds_out = compute_all_gridpoint_stats(
+        dataset_name=dataset,
+        years_list=years_list,
+        seasons=seasons,
+        include_precipitation=include_precipitation,
+    )
+    ds_out = add_output_metadata(
+        ds_out=ds_out,
+        dataset_name=dataset,
+        season_name=season,
+        include_precipitation=include_precipitation,
+    )
+    write_outputs(
+        ds_out=ds_out,
+        output_dir=output_dir,
+        dataset_name=dataset,
+        season_name=season,
+        years_list=years_list,
+        include_precipitation=include_precipitation,
+        write2csv=write2csv,
+        write2nc=write2nc,
+    )
