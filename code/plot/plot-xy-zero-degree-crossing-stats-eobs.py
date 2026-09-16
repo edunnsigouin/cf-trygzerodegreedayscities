@@ -20,7 +20,7 @@ from trygzerodegreedayscities import config
 
 # -----------------------------------------------------------------------------
 dataset = "eobs"
-plot_with_precipitation = False
+plot_with_precipitation = True
 season = "djf"                    # "djf", "mam", "jja", or "son"
 statistic = "zdc_days"             # "zdc_pct", "zdc_days", or "n_valid_days"
 file_years = [1951, 2024]
