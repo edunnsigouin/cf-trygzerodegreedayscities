@@ -13,8 +13,8 @@ processed            = cf_space + 'processed/cf-trygzerodegreedayscities/'
 senorge_raw          = '/nird/projects/NS9873K/DATA/senorge/'
 senorge_processed    = processed + '/senorge/'
 
-eobs_raw             = raw + 'eobs/daily/31_0e/'
-eobs_processed       = processed + 'eobs/31_0e/'
+eobs_raw             = raw + 'eobs/daily/'
+eobs_processed       = processed + 'eobs/'
 
 dirs = {"senorge_processed":senorge_processed,
         "senorge_raw":senorge_raw,

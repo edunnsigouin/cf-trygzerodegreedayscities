@@ -32,12 +32,12 @@ from trygzerodegreedayscities import config
 
 # User settings-------------------------------------------------------------------
 dataset = "eobs"                         # "eobs" or "era5"
-years = [1950, 2024]                     # Inclusive calendar-year range
+eobs_version = "33_0e"
+years = [1950, 2025]                     # Inclusive calendar-year range
 include_precipitation = True             # Also require tp > 0
 spatial_method = "gridpoint_mean"        # "gridpoint_mean" or "city_mean"
 write2csv = True
 write2nc = True
-output_dir = config.dirs["eobs_processed"]
 snap_reference_year = None               # None uses the first requested year
 snap_valid_fraction_threshold = 0.95
 
@@ -58,9 +58,10 @@ CITY_COORDS = {
 BOX_SIZE_DELTAS = {"small": 0.0, "medium": 0.1, "large": 0.2}
 
 DATASET_CONFIG = {
-    "eobs": {"raw_dir": config.dirs["eobs_raw"], "resolution": "0.1x0.1"},
+    "eobs": {"raw_dir": config.dirs["eobs_raw"] + eobs_version + "/", "resolution": "0.1x0.1"},
     "era5": {"raw_dir": config.dirs.get("era5_raw", ""), "resolution": "0.25x0.25"},
 }
+output_dir = config.dirs["eobs_processed"] + eobs_version + '/'
 # --------------------------------------------------------------------------------
 
 for settings in DATASET_CONFIG.values():
